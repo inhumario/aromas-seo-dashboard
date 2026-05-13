@@ -1,0 +1,22 @@
+{
+    auto_https off
+    admin off
+}
+
+:80 {
+    handle /robots.txt {
+        header Content-Type text/plain
+        respond `User-agent: *
+Disallow: /
+` 200
+    }
+
+    handle {
+        header X-Robots-Tag "noindex, nofollow, noarchive, nosnippet"
+        header -Server
+        reverse_proxy 127.0.0.1:8501 {
+            header_up Host {host}
+            header_up X-Forwarded-Proto {scheme}
+        }
+    }
+}
