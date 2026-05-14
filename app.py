@@ -10,6 +10,7 @@ from googleapiclient.discovery import build
 from google.oauth2.credentials import Credentials
 
 from version import __version__, RELEASE_DATE
+import db
 
 # ---------- Config Streamlit ----------
 st.set_page_config(
@@ -71,18 +72,26 @@ def get_clients():
 clients = get_clients()
 GA4_PROPERTY = "properties/316499868"
 MERCHANT_ID = "115390048"
-CACHE_TTL = 60 * 15  # 15 min default
+CACHE_TTL = 60 * 15
+
+# ---------- DB init ----------
+@st.cache_resource
+def init_database():
+    try:
+        db.init_db()
+        return True
+    except Exception as e:
+        st.warning(f"Postgres no inicializado: {e}")
+        return False
+
+db_ok = init_database()
 
 # ---------- Helpers ----------
-def now_es():
+def now_es_str():
     return datetime.now(timezone(timedelta(hours=2))).strftime("%Y-%m-%d %H:%M:%S")
 
-def show_data_status(cache_hit: bool, fetched_at: str, fn_label: str):
-    """Indicador de frescura de datos por sección."""
-    if cache_hit:
-        st.caption(f"💾 Datos del caché ({fn_label}) cargados a las {fetched_at}. Refresca para obtener datos frescos de la API.")
-    else:
-        st.caption(f"✨ Datos frescos ({fn_label}) cargados a las {fetched_at}.")
+
+# ---------- Wrappers de fetch (con caché + escritura a BD) ----------
 
 @st.cache_data(ttl=CACHE_TTL, show_spinner=False)
 def gsc_query(site_url, start, end, dimensions, row_limit=1000):
@@ -92,7 +101,7 @@ def gsc_query(site_url, start, end, dimensions, row_limit=1000):
     }).execute()
     rows = res.get("rows", [])
     if not rows:
-        return pd.DataFrame(), now_es()
+        return pd.DataFrame(), now_es_str()
     df = pd.DataFrame([{
         **{d: r["keys"][i] for i, d in enumerate(dimensions)},
         "clicks": r["clicks"],
@@ -100,7 +109,7 @@ def gsc_query(site_url, start, end, dimensions, row_limit=1000):
         "ctr": r["ctr"],
         "position": r["position"],
     } for r in rows])
-    return df, now_es()
+    return df, now_es_str()
 
 @st.cache_data(ttl=CACHE_TTL, show_spinner=False)
 def ga4_report(start, end, dimensions, metrics, order_by_metric=None, limit=1000):
@@ -115,7 +124,7 @@ def ga4_report(start, end, dimensions, metrics, order_by_metric=None, limit=1000
     res = clients["ga_data"].properties().runReport(property=GA4_PROPERTY, body=body).execute()
     rows = res.get("rows", [])
     if not rows:
-        return pd.DataFrame(), now_es()
+        return pd.DataFrame(), now_es_str()
     data = []
     for r in rows:
         d = {dim: r["dimensionValues"][i]["value"] for i, dim in enumerate(dimensions)}
@@ -126,11 +135,10 @@ def ga4_report(start, end, dimensions, metrics, order_by_metric=None, limit=1000
             except ValueError:
                 d[m] = v
         data.append(d)
-    return pd.DataFrame(data), now_es()
+    return pd.DataFrame(data), now_es_str()
 
 @st.cache_data(ttl=CACHE_TTL, show_spinner=False)
 def merchant_full_status():
-    """Saca productos clasificados por feed (legítimo api|es|ES vs crawl/legacy)."""
     legitimate_ids = set()
     other_sources = {}
     req = clients["mc"].products().list(merchantId=MERCHANT_ID, maxResults=250)
@@ -145,8 +153,6 @@ def merchant_full_status():
                 legitimate_ids.add(p.get("id"))
             other_sources[key] = other_sources.get(key, 0) + 1
         req = clients["mc"].products().list_next(req, r)
-
-    # Estados
     stats = {
         "legitimate_total": len(legitimate_ids),
         "all_total": sum(other_sources.values()),
@@ -175,7 +181,110 @@ def merchant_full_status():
                 code = iss.get("code", "?")
                 stats["issues_by_code"][code] = stats["issues_by_code"].get(code, 0) + 1
         req = clients["mc"].productstatuses().list_next(req, r)
-    return stats, now_es()
+    return stats, now_es_str()
+
+
+# ---------- Snapshot diario al cargar (throttled) ----------
+
+def _maybe_take_snapshots():
+    """Si el último snapshot tiene >20h, captura uno nuevo de Merchant + métricas diarias GSC/GA4 últimos N días."""
+    if not db_ok:
+        return False, "Postgres no disponible"
+    try:
+        age = db.last_merchant_snapshot_age_hours()
+    except Exception as e:
+        return False, f"err leyendo Postgres: {e}"
+
+    if age is not None and age < 20:
+        return False, f"último snapshot hace {age:.1f}h, no toca todavía"
+
+    # 1) Merchant snapshot
+    stats, _ = merchant_full_status()
+    db.insert_merchant_snapshot(stats)
+
+    # 2) GA4 daily series (hostname + métricas) últimos 90 días
+    end = date.today() - timedelta(days=1)
+    start = end - timedelta(days=89)
+    body = {
+        "dateRanges": [{"startDate": str(start), "endDate": str(end)}],
+        "dimensions": [{"name": "date"}, {"name": "hostName"}],
+        "metrics": [{"name": m} for m in ["sessions", "totalUsers", "screenPageViews", "purchaseRevenue", "transactions"]],
+        "limit": 100000,
+    }
+    res = clients["ga_data"].properties().runReport(property=GA4_PROPERTY, body=body).execute()
+    rows = []
+    for r in res.get("rows", []):
+        date_str = r["dimensionValues"][0]["value"]  # YYYYMMDD
+        host = r["dimensionValues"][1]["value"]
+        mv = r["metricValues"]
+        try:
+            d = datetime.strptime(date_str, "%Y%m%d").date()
+        except ValueError:
+            continue
+        rows.append({
+            "metric_date": d,
+            "dimensions": {"hostName": host},
+            "metrics": {
+                "sessions": float(mv[0]["value"]),
+                "totalUsers": float(mv[1]["value"]),
+                "pageViews": float(mv[2]["value"]),
+                "revenue": float(mv[3]["value"]),
+                "transactions": float(mv[4]["value"]),
+            },
+        })
+    db.upsert_daily_rows("ga4_hostname", rows)
+
+    # 3) GSC daily (.com)
+    res = clients["gsc"].searchanalytics().query(siteUrl="sc-domain:aromasdete.com", body={
+        "startDate": str(start), "endDate": str(end),
+        "dimensions": ["date"], "rowLimit": 1000,
+    }).execute()
+    rows = []
+    for r in res.get("rows", []):
+        try:
+            d = date.fromisoformat(r["keys"][0])
+        except ValueError:
+            continue
+        rows.append({
+            "metric_date": d,
+            "dimensions": {},
+            "metrics": {
+                "clicks": r["clicks"],
+                "impressions": r["impressions"],
+                "ctr": r["ctr"],
+                "position": r["position"],
+            },
+        })
+    db.upsert_daily_rows("gsc_com", rows)
+
+    # 4) GSC daily (.eu)
+    try:
+        res = clients["gsc"].searchanalytics().query(siteUrl="sc-domain:aromasdete.eu", body={
+            "startDate": str(start), "endDate": str(end),
+            "dimensions": ["date"], "rowLimit": 1000,
+        }).execute()
+        rows = []
+        for r in res.get("rows", []):
+            try:
+                d = date.fromisoformat(r["keys"][0])
+            except ValueError:
+                continue
+            rows.append({
+                "metric_date": d,
+                "dimensions": {},
+                "metrics": {
+                    "clicks": r["clicks"],
+                    "impressions": r["impressions"],
+                    "ctr": r["ctr"],
+                    "position": r["position"],
+                },
+            })
+        db.upsert_daily_rows("gsc_eu", rows)
+    except Exception:
+        pass
+
+    return True, f"snapshot capturado a las {now_es_str()}"
+
 
 # ---------- Sidebar ----------
 with st.sidebar:
@@ -195,13 +304,86 @@ with st.sidebar:
         st.cache_data.clear()
         st.rerun()
 
-    st.caption(f"TTL del caché: {CACHE_TTL // 60} min · Si una métrica no refleja un cambio reciente, pulsa Refrescar.")
+    st.caption(f"TTL del caché: {CACHE_TTL // 60} min · Pulsa Refrescar si una métrica no refleja un cambio reciente.")
 
     st.divider()
-    st.caption("**Latencia de las fuentes:**")
-    st.caption("· GSC: ~48 h de retraso real (Google publica con delay)")
-    st.caption("· GA4: ~5-15 min para reports, realtime instantáneo")
-    st.caption("· Merchant: cuasi tiempo real (1-3 h por sync)")
+    st.subheader("Histórico (Postgres)")
+    if db_ok:
+        try:
+            age = db.last_merchant_snapshot_age_hours()
+            if age is None:
+                st.warning("Sin snapshots aún")
+            else:
+                st.success(f"Último snapshot: {age:.1f}h")
+        except Exception as e:
+            st.warning(f"err: {e}")
+        if st.button("📸 Capturar snapshot AHORA", use_container_width=True):
+            with st.spinner("Capturando snapshot completo..."):
+                try:
+                    # Forzar: borrar throttling temporal
+                    stats, _ = merchant_full_status()
+                    db.insert_merchant_snapshot(stats)
+                    # GA4 + GSC
+                    end = date.today() - timedelta(days=1)
+                    start = end - timedelta(days=89)
+                    body = {
+                        "dateRanges": [{"startDate": str(start), "endDate": str(end)}],
+                        "dimensions": [{"name": "date"}, {"name": "hostName"}],
+                        "metrics": [{"name": m} for m in ["sessions", "totalUsers", "screenPageViews", "purchaseRevenue", "transactions"]],
+                        "limit": 100000,
+                    }
+                    res = clients["ga_data"].properties().runReport(property=GA4_PROPERTY, body=body).execute()
+                    rows = []
+                    for r in res.get("rows", []):
+                        try:
+                            d = datetime.strptime(r["dimensionValues"][0]["value"], "%Y%m%d").date()
+                        except ValueError:
+                            continue
+                        mv = r["metricValues"]
+                        rows.append({"metric_date": d, "dimensions": {"hostName": r["dimensionValues"][1]["value"]},
+                                     "metrics": {"sessions": float(mv[0]["value"]), "totalUsers": float(mv[1]["value"]),
+                                                 "pageViews": float(mv[2]["value"]), "revenue": float(mv[3]["value"]),
+                                                 "transactions": float(mv[4]["value"])}})
+                    db.upsert_daily_rows("ga4_hostname", rows)
+                    for site, src in [("sc-domain:aromasdete.com", "gsc_com"), ("sc-domain:aromasdete.eu", "gsc_eu")]:
+                        try:
+                            res = clients["gsc"].searchanalytics().query(siteUrl=site, body={
+                                "startDate": str(start), "endDate": str(end),
+                                "dimensions": ["date"], "rowLimit": 1000,
+                            }).execute()
+                            rows = []
+                            for r in res.get("rows", []):
+                                try:
+                                    d = date.fromisoformat(r["keys"][0])
+                                except ValueError:
+                                    continue
+                                rows.append({"metric_date": d, "dimensions": {},
+                                             "metrics": {"clicks": r["clicks"], "impressions": r["impressions"],
+                                                         "ctr": r["ctr"], "position": r["position"]}})
+                            db.upsert_daily_rows(src, rows)
+                        except Exception:
+                            pass
+                    st.success("Snapshot capturado")
+                    st.cache_data.clear()
+                except Exception as e:
+                    st.error(f"err: {e}")
+    else:
+        st.error("Postgres no conectado")
+
+    # Snapshot automático al cargar (si no se ha hecho en 20h)
+    if db_ok:
+        try:
+            took, msg = _maybe_take_snapshots()
+            if took:
+                st.caption(f"✓ Auto-snapshot: {msg}")
+        except Exception:
+            pass
+
+    st.divider()
+    st.caption("**Latencia fuentes:**")
+    st.caption("· GSC: ~48 h delay (oficial Google)")
+    st.caption("· GA4: ~5-15 min reports")
+    st.caption("· Merchant: 1-3 h por sync")
 
     st.divider()
     st.caption(f"[GitHub](https://github.com/inhumario/aromas-seo-dashboard)")
@@ -211,6 +393,7 @@ S = str(start_date); E = str(end_date)
 # ---------- Tabs ----------
 tabs = st.tabs([
     "🍵 Resumen",
+    "📈 Histórico",
     "🔍 SEO orgánico",
     "📊 GA4",
     "💰 Google Ads",
@@ -224,13 +407,11 @@ with tabs[0]:
     col_title, col_refresh = st.columns([5, 1])
     col_title.title("Resumen general")
     if col_refresh.button("🔄 Refrescar", key="r_resumen"):
-        gsc_query.clear()
-        ga4_report.clear()
+        gsc_query.clear(); ga4_report.clear()
         st.rerun()
     st.caption(f"Periodo: {S} → {E}")
 
     col1, col2, col3, col4 = st.columns(4)
-
     df_hosts, fetched = ga4_report(S, E, ["hostName"],
         ["sessions", "totalUsers", "screenPageViews", "purchaseRevenue", "transactions"])
     if not df_hosts.empty:
@@ -246,74 +427,152 @@ with tabs[0]:
         cost = float(df_ads_summary["advertiserAdCost"].sum())
         rev_ads = float(df_ads_summary["purchaseRevenue"].sum())
         if cost > 0:
-            col4.metric("ROAS Ads", f"{rev_ads / cost:.2f}x", help=f"{cost:,.0f} € gastado → {rev_ads:,.0f} € revenue")
-
-    st.caption(f"✨ Datos GA4 cargados a las {fetched}")
+            col4.metric("ROAS Ads", f"{rev_ads / cost:.2f}x")
+    st.caption(f"✨ GA4 a las {fetched}")
     st.divider()
 
     st.subheader("Tráfico por hostname (GA4)")
     if not df_hosts.empty:
         st.dataframe(df_hosts.sort_values("sessions", ascending=False), use_container_width=True)
 
-# ========== SEO ORGÁNICO ==========
+
+# ========== HISTÓRICO ==========
 with tabs[1]:
+    st.title("📈 Histórico — evolución temporal")
+    if not db_ok:
+        st.error("Postgres no disponible.")
+    else:
+        # ---- Merchant evolución ----
+        st.subheader("Estado del Merchant Center (todas las capturas)")
+        merch_hist = db.get_merchant_history(days=180)
+        if not merch_hist:
+            st.info("Sin snapshots aún. Pulsa 'Capturar snapshot AHORA' en el sidebar.")
+        else:
+            df_m = pd.DataFrame(merch_hist)
+            df_m["captured_at"] = pd.to_datetime(df_m["captured_at"])
+            fig = px.line(df_m, x="captured_at",
+                          y=["legitimate_total", "legit_clean", "legit_warnings", "legit_disapproved"],
+                          markers=True,
+                          title="Productos del feed legítimo (api|es|ES) — evolución")
+            st.plotly_chart(fig, use_container_width=True)
+            st.dataframe(df_m, use_container_width=True)
+
+        st.divider()
+
+        # ---- GSC .com evolución diaria ----
+        st.subheader("GSC `aromasdete.com` — métricas diarias")
+        gsc_com = db.get_daily_series("gsc_com", days=90)
+        if not gsc_com:
+            st.info("Sin datos GSC en BD aún.")
+        else:
+            df_g = pd.DataFrame([{
+                "date": row["metric_date"],
+                **row["metrics"],
+            } for row in gsc_com])
+            df_g["date"] = pd.to_datetime(df_g["date"])
+            df_g = df_g.sort_values("date")
+            c1, c2 = st.columns(2)
+            with c1:
+                fig = px.line(df_g, x="date", y=["clicks", "impressions"], title="Clicks e Impresiones")
+                st.plotly_chart(fig, use_container_width=True)
+            with c2:
+                fig = px.line(df_g, x="date", y=["ctr", "position"], title="CTR y posición media (eje único)")
+                st.plotly_chart(fig, use_container_width=True)
+
+        st.divider()
+
+        # ---- GA4 sesiones por hostname ----
+        st.subheader("GA4 sesiones por dominio (diario)")
+        ga4_hist = db.get_daily_series("ga4_hostname", days=90)
+        if not ga4_hist:
+            st.info("Sin datos GA4 en BD aún.")
+        else:
+            data = []
+            for row in ga4_hist:
+                data.append({
+                    "date": row["metric_date"],
+                    "host": (row["dimensions"] or {}).get("hostName", "?"),
+                    **row["metrics"],
+                })
+            df_ga = pd.DataFrame(data)
+            df_ga["date"] = pd.to_datetime(df_ga["date"])
+            df_ga = df_ga[df_ga["host"].isin([
+                "www.aromasdete.com", "www.aromasdete.eu",
+                "blog.aromasdete.com", "noticias.aromasdete.com",
+            ])]
+            c1, c2 = st.columns(2)
+            with c1:
+                fig = px.line(df_ga.sort_values("date"), x="date", y="sessions", color="host",
+                              title="Sesiones diarias por dominio")
+                st.plotly_chart(fig, use_container_width=True)
+            with c2:
+                fig = px.line(df_ga.sort_values("date"), x="date", y="revenue", color="host",
+                              title="Revenue diario por dominio")
+                st.plotly_chart(fig, use_container_width=True)
+
+        st.divider()
+
+        # ---- Audit events ----
+        st.subheader("📌 Hitos / eventos manuales")
+        events = db.get_audit_events(days=365)
+        if events:
+            df_ev = pd.DataFrame(events)
+            st.dataframe(df_ev, use_container_width=True)
+        else:
+            st.info("Sin eventos registrados.")
+        with st.expander("Añadir nuevo evento"):
+            with st.form("new_event"):
+                cat = st.selectbox("Categoría", ["theme_change", "merchant_cleanup", "campaign_launch", "config_change", "other"])
+                title = st.text_input("Título")
+                details = st.text_area("Detalles (opcional)")
+                ok = st.form_submit_button("Guardar")
+                if ok and title:
+                    db.add_audit_event(cat, title, {"notes": details} if details else None)
+                    st.success("Evento guardado")
+                    st.rerun()
+
+
+# ========== SEO ORGÁNICO ==========
+with tabs[2]:
     col_title, col_refresh = st.columns([5, 1])
     col_title.title("SEO orgánico — Search Console")
     if col_refresh.button("🔄 Refrescar", key="r_seo"):
-        gsc_query.clear()
-        st.rerun()
+        gsc_query.clear(); st.rerun()
     st.caption(f"Periodo: {S} → {E}")
-
     site = st.selectbox("Propiedad", ["sc-domain:aromasdete.com", "sc-domain:aromasdete.eu"])
     df_q, fetched_q = gsc_query(site, S, E, ["query"], row_limit=2000)
-    df_p, fetched_p = gsc_query(site, S, E, ["page"], row_limit=2000)
-
+    df_p, _ = gsc_query(site, S, E, ["page"], row_limit=2000)
     if df_q.empty:
-        st.info("Sin datos. Si la propiedad es nueva, GSC tarda 2-3 días en mostrar primeros datos.")
+        st.info("Sin datos.")
     else:
-        st.caption(f"✨ Datos cargados a las {fetched_q}")
-
-        st.subheader("Oportunidades — queries con impresiones altas y posición rescatable (5-20)")
+        st.caption(f"✨ {fetched_q}")
+        st.subheader("Oportunidades — pos 5-20 con ≥100 impresiones")
         opp = df_q[(df_q["impressions"] >= 100) & (df_q["position"] >= 5) & (df_q["position"] <= 20)].sort_values("impressions", ascending=False)
-        st.caption(f"{len(opp)} queries con potencial (≥100 impresiones y posición 5-20)")
-        st.dataframe(
-            opp.head(50).style.format({"ctr": "{:.2%}", "position": "{:.1f}"}),
-            use_container_width=True,
-        )
-
+        st.caption(f"{len(opp)} queries con potencial")
+        st.dataframe(opp.head(50).style.format({"ctr": "{:.2%}", "position": "{:.1f}"}), use_container_width=True)
         st.divider()
         st.subheader("Top 50 queries por clicks")
-        st.dataframe(
-            df_q.sort_values("clicks", ascending=False).head(50).style.format({"ctr": "{:.2%}", "position": "{:.1f}"}),
-            use_container_width=True,
-        )
-
+        st.dataframe(df_q.sort_values("clicks", ascending=False).head(50).style.format({"ctr": "{:.2%}", "position": "{:.1f}"}), use_container_width=True)
         st.divider()
         st.subheader("Top 50 páginas por clicks")
-        st.dataframe(
-            df_p.sort_values("clicks", ascending=False).head(50).style.format({"ctr": "{:.2%}", "position": "{:.1f}"}),
-            use_container_width=True,
-        )
+        st.dataframe(df_p.sort_values("clicks", ascending=False).head(50).style.format({"ctr": "{:.2%}", "position": "{:.1f}"}), use_container_width=True)
 
 # ========== GA4 ==========
-with tabs[2]:
+with tabs[3]:
     col_title, col_refresh = st.columns([5, 1])
     col_title.title("GA4 — analítica")
     if col_refresh.button("🔄 Refrescar", key="r_ga4"):
-        ga4_report.clear()
-        st.rerun()
+        ga4_report.clear(); st.rerun()
     st.caption(f"Periodo: {S} → {E}")
-
     df_pp, fetched_pp = ga4_report(S, E,
         ["hostName", "pagePath"],
         ["sessions", "engagedSessions", "screenPageViews", "purchaseRevenue"],
         order_by_metric="sessions", limit=100)
     if not df_pp.empty:
-        st.caption(f"✨ Datos cargados a las {fetched_pp}")
+        st.caption(f"✨ {fetched_pp}")
         st.subheader("Top 30 páginas por sesiones")
         df_pp["url"] = "https://" + df_pp["hostName"] + df_pp["pagePath"]
         st.dataframe(df_pp.head(30), use_container_width=True)
-
     st.divider()
     st.subheader("Source / Medium")
     df_sm, _ = ga4_report(S, E,
@@ -324,49 +583,36 @@ with tabs[2]:
         st.dataframe(df_sm, use_container_width=True)
 
 # ========== ADS ==========
-with tabs[3]:
+with tabs[4]:
     col_title, col_refresh = st.columns([5, 1])
     col_title.title("Google Ads (datos vía GA4)")
     if col_refresh.button("🔄 Refrescar", key="r_ads"):
-        ga4_report.clear()
-        st.rerun()
+        ga4_report.clear(); st.rerun()
     st.caption(f"Periodo: {S} → {E}")
-
     df_ads, fetched_ads = ga4_report(S, E,
         ["sessionGoogleAdsCampaignName"],
         ["advertiserAdCost", "advertiserAdClicks", "advertiserAdImpressions", "sessions", "conversions", "purchaseRevenue"],
         order_by_metric="advertiserAdCost", limit=50)
     if not df_ads.empty:
-        st.caption(f"✨ Datos cargados a las {fetched_ads}")
+        st.caption(f"✨ {fetched_ads}")
         df_ads = df_ads.copy()
         df_ads["roas"] = df_ads["purchaseRevenue"] / df_ads["advertiserAdCost"].replace(0, float("nan"))
         df_ads = df_ads.sort_values("advertiserAdCost", ascending=False)
-        st.dataframe(
-            df_ads.style.format({
-                "advertiserAdCost": "{:,.2f} €",
-                "purchaseRevenue": "{:,.2f} €",
-                "roas": "{:.2f}x",
-            }),
-            use_container_width=True,
-        )
+        st.dataframe(df_ads.style.format({"advertiserAdCost": "{:,.2f} €", "purchaseRevenue": "{:,.2f} €", "roas": "{:.2f}x"}), use_container_width=True)
         fig = px.bar(df_ads[df_ads["sessionGoogleAdsCampaignName"] != "(not set)"],
-                     x="sessionGoogleAdsCampaignName",
-                     y=["advertiserAdCost", "purchaseRevenue"],
-                     barmode="group",
-                     title="Gasto vs Revenue por campaña")
+                     x="sessionGoogleAdsCampaignName", y=["advertiserAdCost", "purchaseRevenue"],
+                     barmode="group", title="Gasto vs Revenue por campaña")
         st.plotly_chart(fig, use_container_width=True)
 
 # ========== MERCHANT ==========
-with tabs[4]:
+with tabs[5]:
     col_title, col_refresh = st.columns([5, 1])
     col_title.title("Google Merchant Center")
     if col_refresh.button("🔄 Refrescar", key="r_mc"):
-        merchant_full_status.clear()
-        st.rerun()
-
-    with st.spinner("Cargando estado del Merchant Center..."):
+        merchant_full_status.clear(); st.rerun()
+    with st.spinner("Cargando estado del Merchant..."):
         stats, fetched_mc = merchant_full_status()
-    st.caption(f"✨ Datos cargados a las {fetched_mc}")
+    st.caption(f"✨ {fetched_mc}")
 
     st.subheader("Feed legítimo (api|es|ES)")
     col1, col2, col3, col4 = st.columns(4)
@@ -375,95 +621,68 @@ with tabs[4]:
     col3.metric("Con warnings", f"{stats['legit_warnings']:,}")
     col4.metric("Rechazados", f"{stats['legit_disapproved']:,}",
                 delta=f"{-(413 - stats['legit_disapproved'])} vs inicio 14-may" if stats['legit_disapproved'] < 413 else None)
-
     if stats['legit_disapproved'] <= 20:
-        st.success(f"🎯 Solo {stats['legit_disapproved']} productos rechazados (vs 413 al inicio del 14-may)")
+        st.success(f"🎯 Solo {stats['legit_disapproved']} rechazados (vs 413 al inicio del 14-may)")
 
     st.divider()
-    st.subheader("Desglose de todos los productos por fuente")
-    df_sources = pd.DataFrame([
-        {"fuente": k, "productos": v} for k, v in stats['sources_breakdown'].items()
-    ]).sort_values("productos", ascending=False)
+    st.subheader("Productos por fuente")
+    df_sources = pd.DataFrame([{"fuente": k, "productos": v} for k, v in stats['sources_breakdown'].items()]).sort_values("productos", ascending=False)
     st.dataframe(df_sources, use_container_width=True)
-    st.caption("Solo `api|es|ES` (Content API del canal Google & YouTube oficial) es feed legítimo. El resto (crawl, feed legacy) son residuos o tráfico de otros mercados.")
+    st.caption("Solo `api|es|ES` es feed legítimo. El resto son residuos del crawl/feed legacy.")
 
     st.divider()
-    st.subheader("Issues más frecuentes (solo feed legítimo)")
-    df_issues = pd.DataFrame([
-        {"código": k, "ocurrencias": v} for k, v in stats['issues_by_code'].items()
-    ]).sort_values("ocurrencias", ascending=False).head(15)
+    st.subheader("Issues más frecuentes (feed legítimo)")
+    df_issues = pd.DataFrame([{"código": k, "ocurrencias": v} for k, v in stats['issues_by_code'].items()]).sort_values("ocurrencias", ascending=False).head(15)
     st.dataframe(df_issues, use_container_width=True)
-    st.caption("Recuerda: cada producto cuenta su issue × destinos (Shopping, DisplayAds, SurfacesAcrossGoogle). Para # productos únicos, dividir entre 3 aprox.")
 
 # ========== PLAN DE ACCIÓN ==========
-with tabs[5]:
+with tabs[6]:
     st.title("Plan de acción priorizado")
-    st.caption("Tags: 🤖 lo hace Claude · 🧑 lo hace Mario · 🤝 lo hacemos juntos · ✅ ya hecho")
-
+    st.caption("Tags: 🤖 Claude · 🧑 Mario · 🤝 juntos · ✅ hecho")
     st.markdown("""
-### ✅ Ya hechos (14-may-2026)
+### ✅ Hecho (14-may-2026)
+**Merchant Center**
+- 596 productos basura del crawl/feed legacy borrados.
+- 5 productos `illegal_drugs` reescritos.
+- 5 productos `description_short` corregidos.
+- 3 productos basura eliminados, 1 duplicado despublicado.
 
-**Limpieza Merchant Center**
-- ✅ 596 productos basura del crawl/feed legacy borrados de Merchant Center.
-- ✅ "Encontrado por Google" deshabilitado en Merchant.
-- ✅ 5 productos con `illegal_drugs_policy_violation` con descripciones reescritas.
-- ✅ 5 productos con `description_short` corregidas (SEO description en cafés y tazas).
-- ✅ 3 productos basura eliminados de Shopify (PRODUCTO DE PRUEBA, Pack Oferta Tienda x2).
-- ✅ 1 producto duplicado despublicado (Café de Pistacho "-copia").
+**Structured data Shopify**
+- `shippingDetails` + `hasMerchantReturnPolicy` + `aggregateRating` añadidos al JSON-LD.
+- Rich Results Test: 15 elementos válidos, 0 problemas no críticos.
 
-**Structured data en Shopify**
-- ✅ `shippingDetails` añadido al JSON-LD de cada producto (tarifas por país).
-- ✅ `hasMerchantReturnPolicy` añadido (14 días, ReturnByMail).
-- ✅ `aggregateRating` añadido a 103 productos con ≥3 reseñas Trusted Shops.
-- ✅ Rich Results Test: 15 elementos válidos, 0 problemas no críticos.
+**Limpieza theme**
+- Wholesale Pricing Discount desinstalada (B2B inactivo 27 meses).
+- 132 KB de código muerto eliminados del theme.
 
-**Limpieza theme Shopify**
-- ✅ App Wholesale Pricing Discount desinstalada (canal B2B inactivo 27 meses).
-- ✅ 4 archivos del plugin borrados del theme.
-- ✅ 11 archivos del theme limpiados de hooks `data-wpd-*` y clases `data-wpd-hide`.
-- ✅ Theme renombrado a "Aromasdete - Producción 2026-05-14".
+**Accesos SEO + dominios**
+- `sc-domain:aromasdete.eu` añadido a GSC.
+- GA4 unificado (`316499868`), cross-domain configurado.
+- David Boada y Javier Casares fuera de todos los servicios.
 
-**Accesos SEO**
-- ✅ OAuth Google: GSC + GA4 + Merchant + Site Verification operativos.
-- ✅ `sc-domain:aromasdete.eu` añadido a Search Console.
-- ✅ GA4 unificado en una sola propiedad (316499868) midiendo .com + .eu + blog + noticias.
-- ✅ Cross-domain configurado entre los 4 dominios.
-- ✅ David Boada y Javier Casares fuera de Merchant + GSC.
+**Dashboard**
+- v0.1.0 → 0.2.0: versionado + UX de refresh.
+- v0.2.0 → 0.3.0: **Postgres con histórico** + gráficos temporales.
 
-**WordPress (blog. y noticias.)**
-- ✅ Site Kit + The SEO Framework activos.
-- ✅ Tag GA4 cargando con el measurement de la tienda principal.
-
-### ⏳ Pendientes de Chus / equipo
-
-- 🧑 **10 productos sin foto en Shopify** → email enviado a Chus (`mjperez@aromasdete.com`) para decidir foto o despublicar.
-
-### 🟡 Próximos pasos sugeridos
-
-- 🤖 **Esperar 24-48h** → Google reindexa con los cambios. Estrellas en SERP deberían empezar a aparecer.
-- 🤝 **Auditoría SEO orgánica del blog Shopify** → identificar posts que merece la pena refrescar (objetivo original de la sesión).
-- 🤝 **Reactivar blog.aromasdete.com y noticias.aromasdete.com** → 991 posts dormidos desde 2023 con tráfico orgánico activo.
-
-### 🟢 Información
-
-- 🟢 **El canal B2B lleva 27 meses inactivo**: 652 clientes con tag B2B/wholesale, último pedido grupal febrero 2024. Si quieres reactivar, mejor con Shopify Markets B2B nativo.
+### ⏳ Pendiente
+- 🧑 Chus debe decidir las 10 fotos faltantes (email enviado).
+- 🤝 Esperar 24-48h y verificar estrellas en SERP.
+- 🤝 Auditoría SEO orgánica del blog Shopify (objetivo inicial pendiente).
 """)
 
 # ========== CHANGELOG ==========
-with tabs[6]:
+with tabs[7]:
     st.title("📋 Changelog")
     st.caption(f"Versión actual: **v{__version__}** · Released {RELEASE_DATE}")
-    try:
-        with open("/app/CHANGELOG.md") as f:
-            changelog = f.read()
-    except FileNotFoundError:
+    for path in ["/app/CHANGELOG.md", "CHANGELOG.md"]:
         try:
-            with open("CHANGELOG.md") as f:
-                changelog = f.read()
+            with open(path) as f:
+                st.markdown(f.read())
+            break
         except FileNotFoundError:
-            changelog = "_CHANGELOG.md no encontrado en el contenedor_"
-    st.markdown(changelog)
+            continue
+    else:
+        st.warning("CHANGELOG.md no encontrado")
 
-# ---------- Footer ----------
 st.divider()
-st.caption(f"SEO Aromas v{__version__} · {RELEASE_DATE} · noindex · [github](https://github.com/inhumario/aromas-seo-dashboard)")
+st.caption(f"SEO Aromas v{__version__} · {RELEASE_DATE} · Postgres · noindex · [github](https://github.com/inhumario/aromas-seo-dashboard)")
