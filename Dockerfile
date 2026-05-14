@@ -17,7 +17,9 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install -r requirements.txt
 
-COPY app.py version.py CHANGELOG.md /app/
+COPY app.py /app/app.py
+COPY version.py /app/version.py
+COPY CHANGELOG.md /app/CHANGELOG.md
 COPY Caddyfile /etc/caddy/Caddyfile
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
