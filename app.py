@@ -11,6 +11,7 @@ from google.oauth2.credentials import Credentials
 
 from version import __version__, RELEASE_DATE
 import db
+import alerts as alerts_mod
 
 # ---------- Config Streamlit ----------
 st.set_page_config(
@@ -398,6 +399,7 @@ tabs = st.tabs([
     "📊 GA4",
     "💰 Google Ads",
     "🛒 Merchant",
+    "🔔 Alertas",
     "🎯 Plan de acción",
     "📋 Changelog",
 ])
@@ -635,8 +637,94 @@ with tabs[5]:
     df_issues = pd.DataFrame([{"código": k, "ocurrencias": v} for k, v in stats['issues_by_code'].items()]).sort_values("ocurrencias", ascending=False).head(15)
     st.dataframe(df_issues, use_container_width=True)
 
-# ========== PLAN DE ACCIÓN ==========
+# ========== ALERTAS ==========
 with tabs[6]:
+    st.title("🔔 Alertas")
+    st.caption("Las alertas se evalúan tras cada snapshot diario (cron 03:00 Madrid). Cuando se dispara una, se envía email a los destinatarios.")
+
+    if not db_ok:
+        st.error("Postgres no disponible — las alertas no funcionan sin BD.")
+    else:
+        st.subheader("Nueva alerta")
+        with st.form("new_alert"):
+            cA, cB = st.columns(2)
+            with cA:
+                a_name = st.text_input("Nombre", placeholder="Ej. Caída tráfico orgánico .com")
+                a_metric = st.selectbox("Métrica", list(alerts_mod.METRIC_TYPES.keys()),
+                                        format_func=lambda k: alerts_mod.METRIC_TYPES[k])
+                a_emails_raw = st.text_input("Email destinatarios (separados por coma)",
+                                              value="cuadrado.mario@aromasdete.com")
+            with cB:
+                a_cond = st.selectbox("Condición", list(alerts_mod.CONDITIONS.keys()),
+                                      format_func=lambda k: alerts_mod.CONDITIONS[k])
+                a_threshold = st.number_input("Umbral", value=20.0, step=1.0,
+                                              help="Para `lt`/`gt`: valor absoluto. Para `pct_drop/rise`: porcentaje (ej. 20 = ±20%).")
+                a_window = st.selectbox("Ventana de comparación (solo para % drop/rise)",
+                                         ["last_7d_avg", "last_30d_avg"],
+                                         format_func=lambda k: alerts_mod.COMPARE_WINDOWS[k])
+            submitted = st.form_submit_button("➕ Crear alerta", type="primary")
+            if submitted:
+                if not a_name:
+                    st.error("Nombre obligatorio")
+                else:
+                    emails = [e.strip() for e in a_emails_raw.split(",") if e.strip()]
+                    if not emails:
+                        st.error("Al menos un email")
+                    else:
+                        rid = db.create_alert_rule(a_name, a_metric, a_cond, a_threshold,
+                                                  a_window if a_cond.startswith("pct_") else None, emails)
+                        st.success(f"Alerta #{rid} creada")
+                        st.rerun()
+
+        st.divider()
+        st.subheader("Reglas configuradas")
+        rules = db.list_alert_rules()
+        if not rules:
+            st.info("Sin reglas todavía. Crea una arriba.")
+        else:
+            for rule in rules:
+                with st.container(border=True):
+                    c1, c2, c3, c4 = st.columns([4, 2, 1, 1])
+                    estado = "🟢" if rule["enabled"] else "⚪"
+                    c1.markdown(f"**{estado} #{rule['id']} · {rule['name']}**")
+                    metric_label = alerts_mod.METRIC_TYPES.get(rule["metric_type"], rule["metric_type"])
+                    cond_label = alerts_mod.CONDITIONS.get(rule["condition"], rule["condition"])
+                    c1.caption(f"`{metric_label}` {cond_label} **{rule['threshold']}** · → {', '.join(rule['notify_emails'])}")
+                    if rule.get("last_evaluated_at"):
+                        c2.caption(f"Última evaluación: {rule['last_evaluated_at'].strftime('%Y-%m-%d %H:%M')}")
+                    if c3.button("⏸️" if rule["enabled"] else "▶️", key=f"toggle_{rule['id']}", help="Pausar/Reanudar"):
+                        db.toggle_alert_rule(rule["id"], not rule["enabled"])
+                        st.rerun()
+                    if c4.button("🗑️", key=f"del_{rule['id']}", help="Eliminar"):
+                        db.delete_alert_rule(rule["id"])
+                        st.rerun()
+
+        st.divider()
+        c_eval, c_test = st.columns(2)
+        if c_eval.button("🧪 Evaluar todas AHORA (sin esperar al cron)", use_container_width=True):
+            with st.spinner("Evaluando..."):
+                res = alerts_mod.evaluate_all_and_notify()
+            for r in res:
+                if r.get("triggered"):
+                    st.error(f"🔔 DISPARADA #{r['rule_id']} {r['rule_name']}: {r['explanation']}")
+                    if r.get("sent_to"):
+                        st.caption(f"   Enviada a: {', '.join(r['sent_to'])}")
+                else:
+                    st.success(f"· #{r['rule_id']} {r['rule_name']}: {r.get('explanation','OK')}")
+
+        st.divider()
+        st.subheader("Historial de alertas disparadas")
+        events = db.list_alert_events(limit=50)
+        if not events:
+            st.caption("Sin eventos todavía.")
+        else:
+            df_e = pd.DataFrame(events)
+            st.dataframe(df_e[["triggered_at", "rule_name", "metric_value", "reference_value", "explanation", "sent_to"]],
+                         use_container_width=True)
+
+
+# ========== PLAN DE ACCIÓN ==========
+with tabs[7]:
     st.title("Plan de acción priorizado")
     st.caption("Tags: 🤖 Claude · 🧑 Mario · 🤝 juntos · ✅ hecho")
     st.markdown("""
@@ -671,7 +759,7 @@ with tabs[6]:
 """)
 
 # ========== CHANGELOG ==========
-with tabs[7]:
+with tabs[8]:
     st.title("📋 Changelog")
     st.caption(f"Versión actual: **v{__version__}** · Released {RELEASE_DATE}")
     for path in ["/app/CHANGELOG.md", "CHANGELOG.md"]:

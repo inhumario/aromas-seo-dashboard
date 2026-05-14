@@ -2,16 +2,35 @@
 
 Todas las versiones notables del dashboard SEO de Aromas.
 
+## [0.4.0] - 2026-05-14
+
+### Añadido
+- **Cron daemon** dentro del contenedor — `snapshot.py` se ejecuta cada noche a las **03:00 Europe/Madrid**, sin necesidad de abrir el dashboard.
+- **Sistema de alertas configurables**:
+  - Tab "🔔 Alertas" con UI para CRUD de reglas.
+  - 11 métricas soportadas: clicks/impresiones/posición/CTR GSC (.com y .eu), sesiones/revenue/transacciones GA4, productos rechazados/warnings Merchant.
+  - 4 condiciones: `lt`, `gt`, `pct_drop_vs_avg`, `pct_rise_vs_avg`.
+  - 2 ventanas de comparación: media de últimos 7 días o 30 días.
+  - Emails a uno o varios destinatarios cuando la alerta se dispara.
+  - Botón "Evaluar AHORA" para probar sin esperar al cron.
+  - Histórico de eventos disparados visible en la tab.
+- **Script `snapshot.py` standalone** invocable desde CLI: `python snapshot.py [--skip-alerts]`.
+
+### Cambiado
+- Dockerfile incluye `cron` y crontab `/etc/cron.d/seo-cron`.
+- `entrypoint.sh` arranca `cron` antes que Streamlit/Caddy.
+- ENV adicionales: `GMAIL_USER`, `GMAIL_APP_PASSWORD` para envío de alertas.
+
+### Notas operativas
+- El cron diario captura snapshot + evalúa alertas. Si una se dispara, se envía email vía Gmail SMTP.
+- Las credenciales SMTP son las de `cuadrado.mario@aromasdete.com` (mismo `gmail_smtp.env` del host).
+
 ## [0.3.0] - 2026-05-14
 
 ### Añadido
 - **Persistencia con PostgreSQL** (servicio `seo-postgres` en EasyPanel proyecto `travelia`).
 - Tablas: `daily_metrics` (GSC/GA4 diario), `merchant_snapshots` (estado MC en el tiempo), `audit_events` (hitos manuales).
-- **Tab "📈 Histórico"** con gráficos temporales:
-  - Evolución del estado Merchant Center (legítimos vs rechazados vs warnings).
-  - Clicks/impresiones/CTR/posición diarios de GSC.
-  - Sesiones y revenue diarios por dominio en GA4.
-  - Tabla de hitos manuales editable.
+- **Tab "📈 Histórico"** con gráficos temporales (Merchant, GSC diario, GA4 diario por dominio).
 - **Snapshot automático** al cargar el dashboard (throttled: max 1 cada 20h).
 - Botón **"📸 Capturar snapshot AHORA"** en sidebar para forzar.
 - Backfill automático de últimos 90 días al primer arranque (GA4 + GSC).
@@ -34,10 +53,6 @@ Todas las versiones notables del dashboard SEO de Aromas.
 ### Cambiado
 - TTL del caché reducido de 1 hora a **15 minutos**.
 - Caché por función para refrescar selectivamente sin perder todo.
-- KPIs del Resumen ahora incluyen estado actual de Merchant Center.
-
-### Notas operativas
-- La latencia real de las fuentes sigue siendo: GSC ~48h, GA4 ~5-15min para reports + realtime instantáneo, Merchant Center casi tiempo real.
 
 ## [0.1.0] - 2026-05-13
 
