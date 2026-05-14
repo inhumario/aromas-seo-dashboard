@@ -19,6 +19,7 @@ RUN pip install -r requirements.txt
 
 COPY app.py /app/app.py
 COPY version.py /app/version.py
+COPY db.py /app/db.py
 COPY CHANGELOG.md /app/CHANGELOG.md
 COPY Caddyfile /etc/caddy/Caddyfile
 COPY entrypoint.sh /entrypoint.sh
