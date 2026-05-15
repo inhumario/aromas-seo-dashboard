@@ -309,17 +309,20 @@ def _reset_email_html(name, link, welcome):
 
 
 def send_reset_link(user_row, base_url, welcome=False):
-    """Crea un token de un solo uso y envía el email. `user_row` es una fila completa de `users`."""
+    """Crea un token de un solo uso y envía el email. `user_row` es una fila completa de `users`.
+
+    Cada enlace emitido es válido por sí mismo hasta que se usa o caduca: NO se invalidan
+    los anteriores. Así, si se piden varios correos, cualquiera de los enlaces funciona
+    (gana el primero que se usa). Evita el confuso "el enlace ya se ha usado" cuando en
+    realidad solo había sido sustituido por una petición posterior.
+    """
     if not user_row:
         return False, "Usuario no encontrado."
     token = secrets.token_urlsafe(32)
     expires = datetime.now(timezone.utc) + timedelta(minutes=RESET_TTL_MINUTES)
     with db.get_conn() as c:
-        # invalida tokens anteriores sin usar de este usuario
-        c.execute(
-            "UPDATE password_resets SET used_at=NOW() WHERE user_id=%s AND used_at IS NULL",
-            (user_row["id"],),
-        )
+        # limpieza de tokens antiguos ya caducados (no afecta a ninguno vigente)
+        c.execute("DELETE FROM password_resets WHERE created_at < NOW() - INTERVAL '7 days'")
         c.execute(
             "INSERT INTO password_resets (user_id, token_hash, expires_at) VALUES (%s, %s, %s)",
             (user_row["id"], _hash_token(token), expires),
@@ -352,11 +355,15 @@ def check_reset_token(token):
             (th,),
         ).fetchone()
     if not row:
-        return None, "El enlace no es válido."
+        return None, ("Este enlace de recuperación no es válido. Puede que sea de un correo "
+                      "antiguo. Solicita uno nuevo más abajo.")
     if row["used_at"]:
-        return None, "Este enlace ya se ha utilizado. Solicita uno nuevo."
+        return None, ("Este enlace ya se ha utilizado. Si fuiste tú quien cambió la contraseña, "
+                       "tu contraseña nueva ya está activa: vuelve al inicio e inicia sesión. "
+                       "Si no, solicita un enlace nuevo más abajo.")
     if row["expires_at"] < datetime.now(timezone.utc):
-        return None, "El enlace ha caducado. Solicita uno nuevo."
+        return None, ("Este enlace ha caducado (los enlaces duran 60 minutos). "
+                       "Solicita uno nuevo más abajo.")
     user = get_user_by_id(row["user_id"])
     if not user or not user.get("is_active"):
         return None, "La cuenta asociada no está disponible."

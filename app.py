@@ -138,6 +138,15 @@ def render_reset_screen(token):
     with st.container(border=True):
         if not user:
             st.error(reason)
+            st.markdown("**¿Necesitas un enlace nuevo?**")
+            with st.form("reset_renew_form"):
+                renew_login = st.text_input("Tu usuario o email")
+                renew = st.form_submit_button("Enviarme un enlace nuevo",
+                                              type="primary", use_container_width=True)
+            if renew:
+                auth.request_password_reset_public(renew_login, APP_BASE_URL)
+                st.success("Si la cuenta existe, te hemos enviado un enlace nuevo. Abre el "
+                           "correo más reciente y pulsa su enlace.")
             if st.button("Volver al inicio", use_container_width=True):
                 st.query_params.clear()
                 st.rerun()

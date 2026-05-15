@@ -2,6 +2,21 @@
 
 Todas las versiones notables del dashboard SEO de Aromas.
 
+## [0.5.1] - 2026-05-15
+
+### Corregido
+- **Recuperación de contraseña: "el enlace ya se ha usado" al restablecer.** Al pedir un
+  enlace nuevo se invalidaban los anteriores marcándolos como usados; si se solicitaba el
+  correo más de una vez (habitual cuando tarda en llegar), el enlace de un correo previo
+  decía "ya se ha usado". Ahora cada enlace es válido de forma independiente hasta usarse
+  o caducar (60 min) — funciona cualquiera de los correos recibidos.
+
+### Cambiado
+- Mensajes del flujo de recuperación más claros: distinguen enlace no válido, caducado y
+  ya utilizado, e indican qué hacer en cada caso.
+- La pantalla de error de un enlace incluye un formulario para pedir uno nuevo sin salir.
+- Limpieza automática de tokens de recuperación caducados (>7 días).
+
 ## [0.5.0] - 2026-05-15
 
 ### Añadido
