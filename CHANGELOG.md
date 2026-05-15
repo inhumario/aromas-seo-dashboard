@@ -2,6 +2,38 @@
 
 Todas las versiones notables del dashboard SEO de Aromas.
 
+## [0.5.0] - 2026-05-15
+
+### Añadido
+- **Acceso multi-usuario con usuario y contraseña** (antes una única contraseña global):
+  - Tabla `users` en Postgres con contraseñas cifradas (PBKDF2-SHA256 + sal, 240k iteraciones).
+  - Login por usuario **o** email, indistintamente.
+  - Roles: **Administrador** (gestiona usuarios) y **Visualización** (solo consulta).
+- **Tab "👤 Cuenta"**:
+  - "Mi perfil" y cambio de contraseña propia para cualquier usuario.
+  - "Gestión de usuarios" (solo admin): crear usuarios, cambiar rol, activar/desactivar,
+    eliminar y enviar enlaces de restablecimiento.
+- **Recuperación de contraseña por email**: enlace de un solo uso con caducidad de 60 min,
+  enviado vía Gmail SMTP. Accesible desde la pantalla de acceso ("He olvidado mi contraseña").
+- **Email de bienvenida**: al crear un usuario se le puede enviar un enlace para que
+  configure él mismo su contraseña.
+- **Cambio de contraseña obligatorio** en el primer acceso de cada cuenta nueva.
+- Pantalla de acceso rediseñada, centrada y con tema de marca (terracota / crema).
+- Acceso de emergencia con la contraseña general si Postgres no está disponible.
+
+### Cambiado
+- La variable `DASHBOARD_PASSWORD` deja de ser el acceso real: solo siembra el primer
+  administrador y sirve de acceso de emergencia. Tras el primer login, las credenciales
+  viven en la base de datos.
+- Tema de marca aplicado vía `.streamlit/config.toml`.
+- Se oculta el cromo por defecto de Streamlit (menú, toolbar, footer "Made with Streamlit").
+- Eliminados los enlaces a GitHub del sidebar y del pie de página.
+
+### Notas operativas
+- ENV opcionales nuevas: `ADMIN_USERNAME`, `ADMIN_EMAIL`, `ADMIN_FULL_NAME`, `APP_BASE_URL`.
+- La recuperación de contraseña reutiliza `GMAIL_USER` / `GMAIL_APP_PASSWORD` (ya presentes
+  desde v0.4.0 para las alertas).
+
 ## [0.4.0] - 2026-05-14
 
 ### Añadido

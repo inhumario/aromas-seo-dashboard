@@ -79,13 +79,36 @@ CREATE TABLE IF NOT EXISTS alert_events (
     sent_to TEXT[]
 );
 CREATE INDEX IF NOT EXISTS idx_alert_events_rule ON alert_events (rule_id, triggered_at DESC);
+
+CREATE TABLE IF NOT EXISTS users (
+    id BIGSERIAL PRIMARY KEY,
+    username TEXT UNIQUE NOT NULL,
+    email TEXT UNIQUE NOT NULL,
+    full_name TEXT NOT NULL DEFAULT '',
+    password_hash TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'viewer',
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    must_change_password BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_login_at TIMESTAMPTZ
+);
+
+CREATE TABLE IF NOT EXISTS password_resets (
+    id BIGSERIAL PRIMARY KEY,
+    user_id BIGINT REFERENCES users(id) ON DELETE CASCADE,
+    token_hash TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    expires_at TIMESTAMPTZ NOT NULL,
+    used_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_password_resets_token ON password_resets (token_hash);
 """
 
 
 def init_db():
     with get_conn() as c:
         c.execute(SCHEMA)
-        c.execute("INSERT INTO schema_version (version) VALUES (4) ON CONFLICT DO NOTHING")
+        c.execute("INSERT INTO schema_version (version) VALUES (5) ON CONFLICT DO NOTHING")
 
 
 # ---------- Snapshots Merchant ----------

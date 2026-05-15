@@ -12,6 +12,7 @@ from google.oauth2.credentials import Credentials
 from version import __version__, RELEASE_DATE
 import db
 import alerts as alerts_mod
+import auth
 
 # ---------- Config Streamlit ----------
 st.set_page_config(
@@ -27,26 +28,219 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# ---------- Auth ----------
+# ---------- Estilo: oculta el cromo de Streamlit y pule la interfaz ----------
+st.markdown("""
+<style>
+  #MainMenu, [data-testid="stToolbar"], [data-testid="stDecoration"],
+  [data-testid="stStatusWidget"] { display: none !important; }
+  footer { visibility: hidden; height: 0; }
+  .stButton button { border-radius: 8px; font-weight: 600; }
+  .block-container { padding-top: 2.4rem; }
+</style>
+""", unsafe_allow_html=True)
+
+APP_BASE_URL = os.environ.get("APP_BASE_URL", "https://seo.aromasdete.com").rstrip("/")
 DASHBOARD_PASSWORD = os.environ.get("DASHBOARD_PASSWORD", "")
+GA4_PROPERTY = "properties/316499868"
+MERCHANT_ID = "115390048"
+CACHE_TTL = 60 * 15
 
-def check_password():
-    if "auth_ok" not in st.session_state:
-        st.session_state.auth_ok = False
-    if st.session_state.auth_ok:
+# ---------- Inicialización de base de datos ----------
+@st.cache_resource
+def init_database():
+    try:
+        db.init_db()
         return True
-    st.title("🍵 SEO Aromas — acceso")
-    pwd = st.text_input("Contraseña", type="password")
-    if st.button("Entrar"):
-        if DASHBOARD_PASSWORD and pwd == DASHBOARD_PASSWORD:
-            st.session_state.auth_ok = True
-            st.rerun()
-        else:
-            st.error("Contraseña incorrecta")
-    return False
+    except Exception:
+        return False
 
-if not check_password():
-    st.stop()
+db_ok = init_database()
+
+@st.cache_resource
+def bootstrap_auth():
+    """Crea el administrador inicial si la tabla de usuarios está vacía."""
+    try:
+        auth.init_auth()
+        return True
+    except Exception as e:
+        return str(e)
+
+if db_ok:
+    bootstrap_auth()
+
+
+# ====================================================================
+#  AUTENTICACIÓN  (usuario + contraseña, multi-usuario, en Postgres)
+# ====================================================================
+
+def _auth_layout_css():
+    """Oculta el sidebar y centra el contenido en las pantallas de acceso."""
+    st.markdown("""
+    <style>
+      [data-testid="stSidebar"] { display: none !important; }
+      .block-container { max-width: 460px; padding-top: 3.2rem; }
+    </style>
+    """, unsafe_allow_html=True)
+
+
+def _auth_header(subtitle):
+    st.markdown(
+        "<div style='text-align:center;font-size:3.4rem;line-height:1'>🍵</div>"
+        "<h1 style='text-align:center;font-size:1.6rem;margin:.4rem 0 0'>Panel SEO · Aromas de Té</h1>"
+        f"<p style='text-align:center;color:#8A7E6C;margin:.25rem 0 1.3rem'>{subtitle}</p>",
+        unsafe_allow_html=True,
+    )
+
+
+def _pop_flash():
+    msg = st.session_state.pop("flash", None)
+    if msg:
+        getattr(st, msg[0])(msg[1])
+
+
+def render_login_screen():
+    _auth_layout_css()
+    _auth_header("Analítica de posicionamiento y rendimiento")
+    _pop_flash()
+    with st.container(border=True):
+        tab_login, tab_recover = st.tabs(["Iniciar sesión", "He olvidado mi contraseña"])
+        with tab_login:
+            with st.form("login_form"):
+                login = st.text_input("Usuario o email", placeholder="tu.usuario")
+                pwd = st.text_input("Contraseña", type="password")
+                submit = st.form_submit_button("Entrar", type="primary", use_container_width=True)
+            if submit:
+                user = auth.authenticate(login, pwd)
+                if user:
+                    st.session_state.auth_user = user
+                    st.rerun()
+                else:
+                    st.error("Usuario o contraseña incorrectos.")
+        with tab_recover:
+            st.caption("Te enviaremos un enlace a tu email para crear una contraseña nueva.")
+            with st.form("recover_form"):
+                rlogin = st.text_input("Tu usuario o email")
+                rsubmit = st.form_submit_button("Enviar enlace de recuperación",
+                                                use_container_width=True)
+            if rsubmit:
+                auth.request_password_reset_public(rlogin, APP_BASE_URL)
+                st.success("Si la cuenta existe, recibirás un correo con instrucciones en unos "
+                           "minutos. Revisa también la carpeta de spam.")
+    st.markdown(
+        f"<div style='text-align:center;color:#A99F8C;font-size:.8rem;margin-top:1rem'>"
+        f"Uso interno · v{__version__}</div>", unsafe_allow_html=True)
+
+
+def render_reset_screen(token):
+    _auth_layout_css()
+    _auth_header("Crear una contraseña nueva")
+    user, reason = auth.check_reset_token(token)
+    with st.container(border=True):
+        if not user:
+            st.error(reason)
+            if st.button("Volver al inicio", use_container_width=True):
+                st.query_params.clear()
+                st.rerun()
+            return
+        st.markdown(f"Cuenta: **{user['username']}** · {user['email']}")
+        with st.form("reset_form"):
+            p1 = st.text_input("Nueva contraseña", type="password", help="Mínimo 8 caracteres.")
+            p2 = st.text_input("Repite la contraseña", type="password")
+            submit = st.form_submit_button("Guardar contraseña", type="primary",
+                                           use_container_width=True)
+        if submit:
+            if p1 != p2:
+                st.error("Las contraseñas no coinciden.")
+            else:
+                ok, msg = auth.reset_password_with_token(token, p1)
+                if ok:
+                    st.session_state["flash"] = ("success", msg)
+                    st.query_params.clear()
+                    st.rerun()
+                else:
+                    st.error(msg)
+
+
+def render_force_change_screen(user):
+    _auth_layout_css()
+    _auth_header("Establece tu contraseña")
+    with st.container(border=True):
+        st.info("Por seguridad, antes de continuar debes establecer una contraseña personal.")
+        with st.form("force_form"):
+            p1 = st.text_input("Nueva contraseña", type="password", help="Mínimo 8 caracteres.")
+            p2 = st.text_input("Repite la contraseña", type="password")
+            submit = st.form_submit_button("Guardar y entrar", type="primary",
+                                           use_container_width=True)
+        if submit:
+            if p1 != p2:
+                st.error("Las contraseñas no coinciden.")
+            else:
+                ok, msg = auth.force_set_password(user["id"], p1)
+                if ok:
+                    user["must_change_password"] = False
+                    st.session_state.auth_user = user
+                    st.rerun()
+                else:
+                    st.error(msg)
+
+
+def render_legacy_login():
+    """Acceso de emergencia cuando Postgres no está disponible."""
+    _auth_layout_css()
+    _auth_header("Acceso temporal")
+    with st.container(border=True):
+        st.warning("La base de datos de usuarios no está disponible. Acceso de emergencia con "
+                   "la contraseña general.")
+        with st.form("legacy_form"):
+            pwd = st.text_input("Contraseña", type="password")
+            submit = st.form_submit_button("Entrar", type="primary", use_container_width=True)
+        if submit:
+            if DASHBOARD_PASSWORD and pwd == DASHBOARD_PASSWORD:
+                st.session_state.auth_user = {
+                    "id": None, "username": "admin", "email": "",
+                    "full_name": "Administrador", "role": "admin",
+                    "is_active": True, "must_change_password": False, "_legacy": True,
+                }
+                st.rerun()
+            else:
+                st.error("Contraseña incorrecta.")
+
+
+def run_auth_gate():
+    # 1) Enlace de recuperación de contraseña
+    token = st.query_params.get("reset_token")
+    if token:
+        if not db_ok:
+            _auth_layout_css()
+            _auth_header("Recuperación no disponible")
+            st.error("La base de datos no está disponible ahora mismo. Inténtalo más tarde.")
+            st.stop()
+        render_reset_screen(token)
+        st.stop()
+
+    # 2) Postgres caído → acceso de emergencia con contraseña general
+    if not db_ok:
+        if not st.session_state.get("auth_user"):
+            render_legacy_login()
+            st.stop()
+        return st.session_state.auth_user
+
+    # 3) Sesión activa
+    user = st.session_state.get("auth_user")
+    if not user:
+        render_login_screen()
+        st.stop()
+
+    # 4) Cambio de contraseña obligatorio en el primer acceso
+    if user.get("must_change_password"):
+        render_force_change_screen(user)
+        st.stop()
+
+    return user
+
+
+USER = run_auth_gate()
+
 
 # ---------- Credenciales Google ----------
 @st.cache_resource
@@ -71,21 +265,6 @@ def get_clients():
     }
 
 clients = get_clients()
-GA4_PROPERTY = "properties/316499868"
-MERCHANT_ID = "115390048"
-CACHE_TTL = 60 * 15
-
-# ---------- DB init ----------
-@st.cache_resource
-def init_database():
-    try:
-        db.init_db()
-        return True
-    except Exception as e:
-        st.warning(f"Postgres no inicializado: {e}")
-        return False
-
-db_ok = init_database()
 
 # ---------- Helpers ----------
 def now_es_str():
@@ -289,6 +468,14 @@ def _maybe_take_snapshots():
 
 # ---------- Sidebar ----------
 with st.sidebar:
+    with st.container(border=True):
+        _rol = "Administrador" if USER.get("role") == "admin" else "Visualización"
+        st.markdown(f"**{USER.get('full_name') or USER.get('username')}**")
+        st.caption(f"{USER.get('username')} · {_rol}")
+        if st.button("Cerrar sesión", use_container_width=True, key="logout_btn"):
+            st.session_state.pop("auth_user", None)
+            st.rerun()
+
     st.title(f"🍵 SEO Aromas")
     st.caption(f"v{__version__} · {RELEASE_DATE}")
     st.divider()
@@ -387,7 +574,7 @@ with st.sidebar:
     st.caption("· Merchant: 1-3 h por sync")
 
     st.divider()
-    st.caption(f"[GitHub](https://github.com/inhumario/aromas-seo-dashboard)")
+    st.caption("Panel SEO · Aromas de Té · uso interno")
 
 S = str(start_date); E = str(end_date)
 
@@ -402,6 +589,7 @@ tabs = st.tabs([
     "🔔 Alertas",
     "🎯 Plan de acción",
     "📋 Changelog",
+    "👤 Cuenta",
 ])
 
 # ========== RESUMEN ==========
@@ -772,5 +960,162 @@ with tabs[8]:
     else:
         st.warning("CHANGELOG.md no encontrado")
 
+# ========== CUENTA ==========
+with tabs[9]:
+    st.title("👤 Cuenta")
+    legacy = USER.get("_legacy", False)
+    rol_label = "Administrador" if USER.get("role") == "admin" else "Visualización"
+
+    st.subheader("Mi perfil")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Usuario", USER.get("username") or "—")
+    c2.metric("Rol", rol_label)
+    c3.metric("Email", USER.get("email") or "—")
+
+    if legacy:
+        st.info("Estás en modo de acceso de emergencia (sin conexión a la base de datos). "
+                "El cambio de contraseña y la gestión de usuarios no están disponibles ahora mismo.")
+    else:
+        st.divider()
+        st.subheader("Cambiar mi contraseña")
+        with st.form("change_pw_form"):
+            cur_pw = st.text_input("Contraseña actual", type="password")
+            np1 = st.text_input("Nueva contraseña", type="password", help="Mínimo 8 caracteres.")
+            np2 = st.text_input("Repite la nueva contraseña", type="password")
+            pw_ok = st.form_submit_button("Actualizar contraseña", type="primary")
+        if pw_ok:
+            if np1 != np2:
+                st.error("Las contraseñas nuevas no coinciden.")
+            else:
+                done, msg = auth.change_own_password(USER["id"], cur_pw, np1)
+                if done:
+                    st.success(msg)
+                else:
+                    st.error(msg)
+
+    # ---- Gestión de usuarios (solo administradores) ----
+    if USER.get("role") == "admin" and not legacy:
+        st.divider()
+        st.subheader("Gestión de usuarios")
+        st.caption("Crea cuentas para el equipo o para clientes. Cada persona accede con su propio "
+                   "usuario y contraseña; las contraseñas se guardan cifradas, nunca en texto plano.")
+
+        _gf = st.session_state.pop("acct_flash", None)
+        if _gf:
+            getattr(st, _gf[0])(_gf[1])
+
+        with st.expander("➕ Crear nuevo usuario", expanded=False):
+            with st.form("create_user_form"):
+                cu1, cu2 = st.columns(2)
+                with cu1:
+                    nu_user = st.text_input("Usuario", placeholder="nombre.apellido")
+                    nu_name = st.text_input("Nombre completo", placeholder="Nombre Apellido")
+                with cu2:
+                    nu_email = st.text_input("Email")
+                    nu_role = st.selectbox(
+                        "Rol", ["viewer", "admin"],
+                        format_func=lambda r: "Visualización" if r == "viewer" else "Administrador")
+                nu_invite = st.checkbox(
+                    "Enviar email de bienvenida con un enlace para que configure su contraseña",
+                    value=True)
+                nu_pw = st.text_input(
+                    "Contraseña inicial (opcional)", type="password",
+                    help="Déjala vacía para generar una automáticamente. El usuario deberá "
+                         "cambiarla en su primer acceso.")
+                create_ok = st.form_submit_button("Crear usuario", type="primary")
+            if create_ok:
+                pw = (nu_pw or "").strip()
+                generated = False
+                if not pw:
+                    pw = auth.generate_password()
+                    generated = True
+                done, msg = auth.create_user(nu_user, nu_email, nu_name, pw,
+                                             role=nu_role, must_change=True)
+                if not done:
+                    st.error(msg)
+                else:
+                    if nu_invite:
+                        row = auth.get_user_by_login(nu_email)
+                        sent, send_msg = auth.send_reset_link(row, APP_BASE_URL, welcome=True)
+                        if sent:
+                            st.session_state["acct_flash"] = (
+                                "success", f"Usuario creado. Email de bienvenida enviado a {nu_email}.")
+                        else:
+                            st.session_state["acct_flash"] = (
+                                "warning", f"Usuario creado, pero no se pudo enviar el email "
+                                           f"({send_msg}). Contraseña temporal: «{pw}» — "
+                                           "compártela de forma segura.")
+                    elif generated:
+                        st.session_state["acct_flash"] = (
+                            "success", f"Usuario creado. Contraseña temporal: «{pw}» — compártela "
+                                       "de forma segura; deberá cambiarla al entrar.")
+                    else:
+                        st.session_state["acct_flash"] = (
+                            "success", "Usuario creado con la contraseña indicada. Deberá "
+                                       "cambiarla en su primer acceso.")
+                    st.rerun()
+
+        st.markdown("**Usuarios con acceso**")
+        for u in auth.list_users():
+            with st.container(border=True):
+                es_yo = u["id"] == USER["id"]
+                u_rol = "Administrador" if u["role"] == "admin" else "Visualización"
+                u_estado = "🟢 Activo" if u["is_active"] else "⚪ Inactivo"
+                u_last = (u["last_login_at"].strftime("%Y-%m-%d %H:%M")
+                          if u.get("last_login_at") else "nunca")
+                st.markdown(f"**{u['full_name'] or u['username']}**"
+                            + ("  ·  *(tú)*" if es_yo else ""))
+                st.caption(f"`{u['username']}` · {u['email']}")
+                st.caption(f"{u_rol} · {u_estado} · último acceso: {u_last}")
+
+                bcol1, bcol2, bcol3, bcol4 = st.columns(4)
+                # Rol
+                if u["role"] == "viewer":
+                    if bcol1.button("⬆️ Hacer admin", key=f"role_{u['id']}",
+                                    use_container_width=True):
+                        done, msg = auth.set_role(u["id"], "admin", USER["id"])
+                        if done:
+                            st.rerun()
+                        st.error(msg)
+                else:
+                    if bcol1.button("⬇️ Quitar admin", key=f"role_{u['id']}",
+                                    use_container_width=True):
+                        done, msg = auth.set_role(u["id"], "viewer", USER["id"])
+                        if done:
+                            st.rerun()
+                        st.error(msg)
+                # Activo / inactivo
+                if u["is_active"]:
+                    if bcol2.button("⏸️ Desactivar", key=f"act_{u['id']}",
+                                    use_container_width=True, disabled=es_yo):
+                        done, msg = auth.set_active(u["id"], False, USER["id"])
+                        if done:
+                            st.rerun()
+                        st.error(msg)
+                else:
+                    if bcol2.button("▶️ Activar", key=f"act_{u['id']}",
+                                    use_container_width=True):
+                        done, msg = auth.set_active(u["id"], True, USER["id"])
+                        if done:
+                            st.rerun()
+                        st.error(msg)
+                # Enlace de restablecimiento
+                if bcol3.button("📧 Enviar enlace", key=f"rst_{u['id']}",
+                                use_container_width=True,
+                                help="Envía un email para que restablezca su contraseña"):
+                    row = auth.get_user_by_id(u["id"])
+                    sent, send_msg = auth.send_reset_link(row, APP_BASE_URL, welcome=False)
+                    if sent:
+                        st.success(f"Enlace de restablecimiento enviado a {u['email']}.")
+                    else:
+                        st.error(f"No se pudo enviar el email: {send_msg}")
+                # Eliminar
+                if bcol4.button("🗑️ Eliminar", key=f"del_{u['id']}",
+                                use_container_width=True, disabled=es_yo):
+                    done, msg = auth.delete_user(u["id"], USER["id"])
+                    if done:
+                        st.rerun()
+                    st.error(msg)
+
 st.divider()
-st.caption(f"SEO Aromas v{__version__} · {RELEASE_DATE} · Postgres · noindex · [github](https://github.com/inhumario/aromas-seo-dashboard)")
+st.caption(f"Panel SEO · Aromas de Té · v{__version__} · {RELEASE_DATE} · uso interno")
