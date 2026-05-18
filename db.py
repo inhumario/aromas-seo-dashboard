@@ -102,13 +102,28 @@ CREATE TABLE IF NOT EXISTS password_resets (
     used_at TIMESTAMPTZ
 );
 CREATE INDEX IF NOT EXISTS idx_password_resets_token ON password_resets (token_hash);
+
+CREATE TABLE IF NOT EXISTS action_items (
+    id BIGSERIAL PRIMARY KEY,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    done_at TIMESTAMPTZ,
+    frente TEXT NOT NULL DEFAULT 'otro',
+    title TEXT NOT NULL,
+    detail TEXT NOT NULL DEFAULT '',
+    owner TEXT NOT NULL DEFAULT 'mario',
+    status TEXT NOT NULL DEFAULT 'pending',
+    priority INT NOT NULL DEFAULT 2,
+    source TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_action_items_status ON action_items (status, priority);
 """
 
 
 def init_db():
     with get_conn() as c:
         c.execute(SCHEMA)
-        c.execute("INSERT INTO schema_version (version) VALUES (5) ON CONFLICT DO NOTHING")
+        c.execute("INSERT INTO schema_version (version) VALUES (6) ON CONFLICT DO NOTHING")
 
 
 # ---------- Snapshots Merchant ----------
@@ -288,3 +303,52 @@ def record_alert_event(rule_id: int, metric_value: float, reference_value: float
 def mark_evaluated(rule_id: int):
     with get_conn() as c:
         c.execute("UPDATE alert_rules SET last_evaluated_at=NOW() WHERE id=%s", (rule_id,))
+
+
+# ---------- Plan de acción (action_items) ----------
+
+def count_action_items() -> int:
+    with get_conn() as c:
+        r = c.execute("SELECT COUNT(*) AS n FROM action_items")
+        return r.fetchone()["n"]
+
+
+def create_action_item(frente: str, title: str, detail: str = "", owner: str = "mario",
+                        priority: int = 2, source: str = "") -> int:
+    with get_conn() as c:
+        r = c.execute(
+            """
+            INSERT INTO action_items (frente, title, detail, owner, priority, source)
+            VALUES (%s, %s, %s, %s, %s, %s) RETURNING id
+            """,
+            (frente, title, detail, owner, priority, source),
+        )
+        return r.fetchone()["id"]
+
+
+def list_action_items(include_done: bool = True):
+    with get_conn() as c:
+        q = "SELECT * FROM action_items"
+        if not include_done:
+            q += " WHERE status <> 'done'"
+        q += " ORDER BY priority ASC, created_at ASC"
+        return list(c.execute(q))
+
+
+def set_action_item_status(item_id: int, status: str):
+    with get_conn() as c:
+        if status == "done":
+            c.execute(
+                "UPDATE action_items SET status='done', done_at=NOW(), updated_at=NOW() WHERE id=%s",
+                (item_id,),
+            )
+        else:
+            c.execute(
+                "UPDATE action_items SET status=%s, done_at=NULL, updated_at=NOW() WHERE id=%s",
+                (status, item_id),
+            )
+
+
+def delete_action_item(item_id: int):
+    with get_conn() as c:
+        c.execute("DELETE FROM action_items WHERE id=%s", (item_id,))

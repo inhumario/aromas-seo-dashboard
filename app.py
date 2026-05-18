@@ -373,6 +373,36 @@ def merchant_full_status():
     return stats, now_es_str()
 
 
+@st.cache_data(ttl=CACHE_TTL, show_spinner=False)
+def merchant_account_status():
+    """Estado a nivel de cuenta: sitio reclamado, incidencias de cuenta y cobertura por país."""
+    acs = clients["mc"].accountstatuses().get(merchantId=MERCHANT_ID, accountId=MERCHANT_ID).execute()
+    out = {"website_claimed": acs.get("websiteClaimed"), "account_issues": [], "country_stats": []}
+    for iss in acs.get("accountLevelIssues", []):
+        out["account_issues"].append({
+            "severity": iss.get("severity", ""),
+            "title": iss.get("title", ""),
+            "country": iss.get("country", ""),
+            "destination": iss.get("destination", ""),
+            "detail": iss.get("detail", ""),
+        })
+    seen = set()
+    for p in acs.get("products", []):
+        key = (p.get("channel"), p.get("country"))
+        if key in seen:
+            continue
+        seen.add(key)
+        s = p.get("statistics", {})
+        out["country_stats"].append({
+            "canal": p.get("channel"),
+            "país": p.get("country"),
+            "activos": int(s.get("active", 0) or 0),
+            "pendientes": int(s.get("pending", 0) or 0),
+            "rechazados": int(s.get("disapproved", 0) or 0),
+        })
+    return out, now_es_str()
+
+
 # ---------- Snapshot diario al cargar (throttled) ----------
 
 def _maybe_take_snapshots():
@@ -808,7 +838,32 @@ with tabs[5]:
     col_title, col_refresh = st.columns([5, 1])
     col_title.title("Google Merchant Center")
     if col_refresh.button("🔄 Refrescar", key="r_mc"):
-        merchant_full_status.clear(); st.rerun()
+        merchant_full_status.clear(); merchant_account_status.clear(); st.rerun()
+
+    with st.spinner("Cargando estado de la cuenta..."):
+        acct, fetched_acct = merchant_account_status()
+    st.subheader("Estado de la cuenta")
+    ca1, ca2 = st.columns(2)
+    ca1.metric("Sitio web reclamado", "✅ Sí" if acct["website_claimed"] else "❌ No")
+    ca2.metric("Incidencias de cuenta", len(acct["account_issues"]))
+    if acct["account_issues"]:
+        for iss in acct["account_issues"]:
+            sev = "🔴" if iss["severity"] == "critical" else "🟠"
+            loc = " · ".join(x for x in (iss["country"], iss["destination"]) if x)
+            st.warning(f"{sev} **{iss['title']}**" + (f" — {loc}" if loc else "")
+                       + (f"\n\n{iss['detail']}" if iss["detail"] else ""))
+    else:
+        st.success("Sin incidencias a nivel de cuenta.")
+    if acct["country_stats"]:
+        st.caption("Productos por país y canal:")
+        st.dataframe(pd.DataFrame(acct["country_stats"]), use_container_width=True)
+    paises = {c["país"] for c in acct["country_stats"]}
+    if paises and paises <= {"ES"}:
+        st.info("La cuenta solo publica en **ES**. Para llevar los productos de `aromasdete.eu` "
+                "a las fichas gratuitas de Italia hay que añadir ese mercado — ver pestaña Plan de acción.")
+    st.caption(f"✨ {fetched_acct}")
+
+    st.divider()
     with st.spinner("Cargando estado del Merchant..."):
         stats, fetched_mc = merchant_full_status()
     st.caption(f"✨ {fetched_mc}")
@@ -922,37 +977,163 @@ with tabs[6]:
 
 # ========== PLAN DE ACCIÓN ==========
 with tabs[7]:
-    st.title("Plan de acción priorizado")
-    st.caption("Tags: 🤖 Claude · 🧑 Mario · 🤝 juntos · ✅ hecho")
-    st.markdown("""
-### ✅ Hecho (14-may-2026)
-**Merchant Center**
-- 596 productos basura del crawl/feed legacy borrados.
-- 5 productos `illegal_drugs` reescritos.
-- 5 productos `description_short` corregidos.
-- 3 productos basura eliminados, 1 duplicado despublicado.
+    st.title("🎯 Plan de acción")
+    st.caption("Responsable: 🤖 Claude · 🧑 Mario · 🤝 juntos — pulsa los botones para cambiar el estado.")
 
-**Structured data Shopify**
-- `shippingDetails` + `hasMerchantReturnPolicy` + `aggregateRating` añadidos al JSON-LD.
-- Rich Results Test: 15 elementos válidos, 0 problemas no críticos.
+    FRENTE_LABEL = {
+        "indexacion": "🔎 Indexación",
+        "structured_data": "🏷️ Datos estructurados",
+        "shopping_eu": "🛍️ Shopping .eu",
+        "merchant": "🛒 Merchant Center",
+        "blog": "📝 Blog",
+        "otro": "📌 Otro",
+    }
+    OWNER_ICON = {"claude": "🤖", "mario": "🧑", "juntos": "🤝"}
+    PRIO_LABEL = {1: "🔴 Alta", 2: "🟡 Media", 3: "⚪ Baja"}
+    STATUS_LABEL = {"pending": "Pendiente", "in_progress": "En curso", "done": "Hecho"}
 
-**Limpieza theme**
-- Wholesale Pricing Discount desinstalada (B2B inactivo 27 meses).
-- 132 KB de código muerto eliminados del theme.
+    DEFAULT_ACTION_ITEMS = [
+        {"frente": "structured_data", "owner": "mario", "priority": 1,
+         "source": "GSC 13-may",
+         "title": "Validar corrección de datos estructurados en aromasdete.eu",
+         "detail": "GSC → propiedad aromasdete.eu → informes 'Fragmentos de productos' y "
+                   "'Fichas de comerciantes' → botón 'Validar corrección'. Los campos "
+                   "review / aggregateRating / shippingDetails / hasMerchantReturnPolicy ya "
+                   "están en vivo en el theme (fix del 14-may, verificado). Solo falta que "
+                   "Google recrawlee. Coste 0."},
+        {"frente": "merchant", "owner": "juntos", "priority": 1,
+         "source": "Merchant accountstatuses",
+         "title": "66 productos con 'landing_page_error' en el feed .com",
+         "detail": "~89 productos rechazados en Merchant, 66 por 'Product page unavailable'. "
+                   "Revisar si son productos despublicados/agotados o URLs rotas y depurar el feed."},
+        {"frente": "shopping_eu", "owner": "mario", "priority": 2,
+         "source": "GSC 14-may",
+         "title": "Añadir Italia como mercado en el canal Google & YouTube de Shopify",
+         "detail": "Shopify admin → canal 'Google y YouTube' → países/mercados objetivo → añadir "
+                   "Italia. Sube los ~640 productos de aromasdete.eu a las fichas gratuitas de la "
+                   "pestaña Shopping. Hoy la cuenta Merchant solo publica online/ES."},
+        {"frente": "shopping_eu", "owner": "mario", "priority": 2,
+         "source": "Merchant",
+         "title": "Verificar y reclamar el dominio aromasdete.eu en Merchant Center",
+         "detail": "Merchant 115390048 tiene reclamado solo www.aromasdete.com. Para fichas "
+                   "gratuitas con URLs .eu hay que verificar/reclamar aromasdete.eu (el canal "
+                   "Google de Shopify suele hacerlo al añadir el mercado)."},
+        {"frente": "merchant", "owner": "juntos", "priority": 2,
+         "source": "Merchant 28-abr",
+         "title": "Completar envío y devoluciones de Italia en Merchant",
+         "detail": "Informe de calidad de tienda (abril, Italia): gastos de envío, plazo y gastos "
+                   "de devolución = 'Incompleto'. Shipping en Merchant hoy solo ES/GB/PT; return "
+                   "policy solo ES. Confirmar zona de envío Italia en Shopify y extender la "
+                   "política de devoluciones a IT; el canal Google sincroniza ambos."},
+        {"frente": "indexacion", "owner": "mario", "priority": 2,
+         "source": "GSC 17-may",
+         "title": "Revisar páginas 404 en noticias.aromasdete.com",
+         "detail": "GSC → propiedad noticias.aromasdete.com → informe 'Páginas' → motivo "
+                   "'No encontrada (404)'. Probables restos del saneo de enlaces/imágenes del "
+                   "blog legacy (14-16 may). El resto de motivos del correo (noindex, "
+                   "redirección, canónica) son comportamiento normal de Shopify/WP."},
+        {"frente": "indexacion", "owner": "claude", "priority": 3,
+         "source": "GSC 14-may",
+         "title": "Revisar 'Duplicada: canónica distinta' en blog.aromasdete.com",
+         "detail": "Comprobar si hay artículos del blog con canónica que Google ignora. Si es "
+                   "paginación o tags, es ruido; si es un artículo real sin indexar, corregir."},
+    ]
 
-**Accesos SEO + dominios**
-- `sc-domain:aromasdete.eu` añadido a GSC.
-- GA4 unificado (`316499868`), cross-domain configurado.
-- David Boada y Javier Casares fuera de todos los servicios.
+    if not db_ok:
+        st.error("Postgres no disponible — el plan de acción dinámico necesita base de datos.")
+    else:
+        if db.count_action_items() == 0:
+            for it in DEFAULT_ACTION_ITEMS:
+                db.create_action_item(**it)
 
-**Dashboard**
-- v0.1.0 → 0.2.0: versionado + UX de refresh.
-- v0.2.0 → 0.3.0: **Postgres con histórico** + gráficos temporales.
+        items = db.list_action_items()
+        abiertas = [i for i in items if i["status"] != "done"]
+        hechas = [i for i in items if i["status"] == "done"]
+        en_curso = [i for i in abiertas if i["status"] == "in_progress"]
 
-### ⏳ Pendiente
-- 🧑 Chus debe decidir las 10 fotos faltantes (email enviado).
-- 🤝 Esperar 24-48h y verificar estrellas en SERP.
-- 🤝 Auditoría SEO orgánica del blog Shopify (objetivo inicial pendiente).
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Abiertas", len(abiertas))
+        m2.metric("En curso", len(en_curso))
+        m3.metric("Completadas", len(hechas))
+
+        def _render_action_item(it):
+            with st.container(border=True):
+                owner = OWNER_ICON.get(it["owner"], "")
+                done = it["status"] == "done"
+                titulo = f"~~{it['title']}~~" if done else f"**{it['title']}**"
+                st.markdown(f"{owner} {titulo}")
+                meta = (f"{FRENTE_LABEL.get(it['frente'], it['frente'])} · "
+                        f"{PRIO_LABEL.get(it['priority'], '')} · "
+                        f"{STATUS_LABEL.get(it['status'], it['status'])}")
+                if it["source"]:
+                    meta += f" · 📨 {it['source']}"
+                st.caption(meta)
+                if it["detail"]:
+                    st.caption(it["detail"])
+                c = st.columns(3)
+                i = it["id"]
+                if it["status"] == "pending":
+                    if c[0].button("▶️ En curso", key=f"ai_prog_{i}", use_container_width=True):
+                        db.set_action_item_status(i, "in_progress"); st.rerun()
+                    if c[1].button("✅ Hecho", key=f"ai_done_{i}", use_container_width=True):
+                        db.set_action_item_status(i, "done"); st.rerun()
+                elif it["status"] == "in_progress":
+                    if c[0].button("✅ Hecho", key=f"ai_done_{i}", use_container_width=True):
+                        db.set_action_item_status(i, "done"); st.rerun()
+                    if c[1].button("↩️ Pendiente", key=f"ai_pend_{i}", use_container_width=True):
+                        db.set_action_item_status(i, "pending"); st.rerun()
+                else:
+                    if c[0].button("↩️ Reabrir", key=f"ai_reopen_{i}", use_container_width=True):
+                        db.set_action_item_status(i, "pending"); st.rerun()
+                if c[2].button("🗑️", key=f"ai_del_{i}", use_container_width=True, help="Eliminar"):
+                    db.delete_action_item(i); st.rerun()
+
+        st.subheader("⏳ Tareas abiertas")
+        if not abiertas:
+            st.success("🎉 Nada pendiente.")
+        for it in abiertas:
+            _render_action_item(it)
+
+        if hechas:
+            with st.expander(f"✅ Completadas ({len(hechas)})", expanded=False):
+                for it in hechas:
+                    _render_action_item(it)
+
+        with st.expander("➕ Añadir tarea"):
+            with st.form("new_action_item"):
+                ni_title = st.text_input("Título")
+                ni_detail = st.text_area("Detalle", height=80)
+                fc1, fc2, fc3 = st.columns(3)
+                ni_frente = fc1.selectbox("Frente", list(FRENTE_LABEL.keys()),
+                                          format_func=lambda k: FRENTE_LABEL[k])
+                ni_owner = fc2.selectbox("Responsable", list(OWNER_ICON.keys()),
+                                         format_func=lambda k: f"{OWNER_ICON[k]} {k}")
+                ni_prio = fc3.selectbox("Prioridad", [1, 2, 3],
+                                        format_func=lambda p: PRIO_LABEL[p], index=1)
+                ni_source = st.text_input("Origen (opcional)", placeholder="Ej. GSC 17-may")
+                if st.form_submit_button("Añadir", type="primary"):
+                    if not ni_title.strip():
+                        st.error("El título es obligatorio.")
+                    else:
+                        db.create_action_item(ni_frente, ni_title.strip(), ni_detail.strip(),
+                                               ni_owner, ni_prio, ni_source.strip())
+                        st.rerun()
+
+    with st.expander("📜 Hitos completados (14-may-2026)"):
+        st.markdown("""
+**Merchant Center** — 596 productos basura del crawl/feed legacy borrados; 5 `illegal_drugs`
+reescritos; 5 `description_short` corregidos; 3 basura eliminados, 1 duplicado despublicado.
+
+**Structured data Shopify** — `shippingDetails` + `hasMerchantReturnPolicy` + `aggregateRating`
+añadidos al JSON-LD. Rich Results Test: 15 elementos válidos, 0 problemas no críticos.
+
+**Limpieza theme** — Wholesale Pricing Discount desinstalada (B2B inactivo 27 meses);
+132 KB de código muerto eliminados del theme.
+
+**Accesos SEO + dominios** — `sc-domain:aromasdete.eu` añadido a GSC; GA4 unificado
+(`316499868`), cross-domain configurado; David Boada y Javier Casares fuera de los servicios.
+
+**Dashboard** — v0.1.0 → 0.3.0: versionado, UX de refresh y Postgres con histórico.
 """)
 
 # ========== CHANGELOG ==========

@@ -2,6 +2,26 @@
 
 Todas las versiones notables del dashboard SEO de Aromas.
 
+## [0.6.0] - 2026-05-18
+
+### Añadido
+- **Pestaña "Plan de acción" dinámica.** Antes era texto fijo; ahora es un checklist real
+  persistido en Postgres (tabla `action_items`):
+  - Cada tarea tiene frente, responsable (🤖 Claude / 🧑 Mario / 🤝 juntos), prioridad,
+    origen y estado (pendiente → en curso → hecho).
+  - Botones para avanzar de estado, reabrir y eliminar; formulario para añadir tareas.
+  - Contadores de tareas abiertas / en curso / completadas.
+  - Semilla inicial con los frentes detectados en el correo de Google Search Console y
+    Merchant Center de mayo: indexación, datos estructurados de `aromasdete.eu`, fichas
+    gratuitas de Shopping en `.eu` y calidad de tienda en Italia.
+  - Los hitos del 14-may se conservan como historial plegable.
+- **Pestaña "Merchant": estado de la cuenta.** Nuevo bloque que consulta `accountstatuses`:
+  sitio web reclamado, incidencias a nivel de cuenta y cobertura de productos por país y
+  canal. Avisa cuando la cuenta solo publica en ES.
+
+### Cambiado
+- Esquema de base de datos a la versión 6 (nueva tabla `action_items`).
+
 ## [0.5.1] - 2026-05-15
 
 ### Corregido
