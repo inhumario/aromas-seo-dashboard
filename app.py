@@ -993,50 +993,39 @@ with tabs[7]:
     STATUS_LABEL = {"pending": "Pendiente", "in_progress": "En curso", "done": "Hecho"}
 
     DEFAULT_ACTION_ITEMS = [
-        {"frente": "structured_data", "owner": "mario", "priority": 1,
-         "source": "GSC 13-may",
-         "title": "Validar corrección de datos estructurados en aromasdete.eu",
-         "detail": "GSC → propiedad aromasdete.eu → informes 'Fragmentos de productos' y "
-                   "'Fichas de comerciantes' → botón 'Validar corrección'. Los campos "
-                   "review / aggregateRating / shippingDetails / hasMerchantReturnPolicy ya "
-                   "están en vivo en el theme (fix del 14-may, verificado). Solo falta que "
-                   "Google recrawlee. Coste 0."},
         {"frente": "merchant", "owner": "juntos", "priority": 1,
          "source": "Merchant accountstatuses",
-         "title": "66 productos con 'landing_page_error' en el feed .com",
-         "detail": "~89 productos rechazados en Merchant, 66 por 'Product page unavailable'. "
-                   "Revisar si son productos despublicados/agotados o URLs rotas y depurar el feed."},
-        {"frente": "shopping_eu", "owner": "mario", "priority": 2,
-         "source": "GSC 14-may",
-         "title": "Añadir Italia como mercado en el canal Google & YouTube de Shopify",
-         "detail": "Shopify admin → canal 'Google y YouTube' → países/mercados objetivo → añadir "
-                   "Italia. Sube los ~640 productos de aromasdete.eu a las fichas gratuitas de la "
-                   "pestaña Shopping. Hoy la cuenta Merchant solo publica online/ES."},
-        {"frente": "shopping_eu", "owner": "mario", "priority": 2,
-         "source": "Merchant",
-         "title": "Verificar y reclamar el dominio aromasdete.eu en Merchant Center",
-         "detail": "Merchant 115390048 tiene reclamado solo www.aromasdete.com. Para fichas "
-                   "gratuitas con URLs .eu hay que verificar/reclamar aromasdete.eu (el canal "
-                   "Google de Shopify suele hacerlo al añadir el mercado)."},
-        {"frente": "merchant", "owner": "juntos", "priority": 2,
-         "source": "Merchant 28-abr",
-         "title": "Completar envío y devoluciones de Italia en Merchant",
-         "detail": "Informe de calidad de tienda (abril, Italia): gastos de envío, plazo y gastos "
-                   "de devolución = 'Incompleto'. Shipping en Merchant hoy solo ES/GB/PT; return "
-                   "policy solo ES. Confirmar zona de envío Italia en Shopify y extender la "
-                   "política de devoluciones a IT; el canal Google sincroniza ambos."},
+         "title": "Limpiar 66 productos 'landing_page_error' en el feed .com",
+         "detail": "Diagnóstico 18-may: son productos status=active pero published_at=null "
+                   "(despublicados del escaparate). 59 de 63 URLs base devuelven 404 y siguen "
+                   "en el feed de Merchant vía el canal Google. Decidir por producto: "
+                   "republicar los que deban venderse o sacarlos del canal Google. Lista "
+                   "completa en audit-data/merchant_landing_page_error_2026-05-18.md. El "
+                   "Shopify Flow de auto-despublicar (en Pendientes) evita la recaída."},
         {"frente": "indexacion", "owner": "mario", "priority": 2,
          "source": "GSC 17-may",
-         "title": "Revisar páginas 404 en noticias.aromasdete.com",
-         "detail": "GSC → propiedad noticias.aromasdete.com → informe 'Páginas' → motivo "
-                   "'No encontrada (404)'. Probables restos del saneo de enlaces/imágenes del "
-                   "blog legacy (14-16 may). El resto de motivos del correo (noindex, "
-                   "redirección, canónica) son comportamiento normal de Shopify/WP."},
-        {"frente": "indexacion", "owner": "claude", "priority": 3,
+         "title": "Validar 404 legacy en GSC (.com / noticias / blog)",
+         "detail": "Comprobado 18-may: el sitemap de noticias.aromasdete.com está limpio "
+                   "(195/195 URLs → HTTP 200). Los 404 que reporta GSC son URLs antiguas "
+                   "(PrestaShop) que Google recuerda de enlaces/índice, no del sitemap. "
+                   "Acción: GSC → informe de Páginas → motivo 404 → 'Validar corrección'. "
+                   "Es limpieza de URLs muertas, no un problema de contenido."},
+        {"frente": "blog", "owner": "claude", "priority": 2,
          "source": "GSC 14-may",
-         "title": "Revisar 'Duplicada: canónica distinta' en blog.aromasdete.com",
-         "detail": "Comprobar si hay artículos del blog con canónica que Google ignora. Si es "
-                   "paginación o tags, es ruido; si es un artículo real sin indexar, corregir."},
+         "title": "Blog: mucho contenido viejo sin indexar",
+         "detail": "Inspección GSC 18-may: solo 13 de 30 URLs de muestra de "
+                   "blog.aromasdete.com están indexadas. El resto son episodios viejos de "
+                   "/podcast/ (2019) y posts antiguos en italiano/inglés/catalán que "
+                   "duplican el contenido en español (de ahí el aviso 'Duplicada: canónica "
+                   "distinta'). Decidir qué hacer con ese contenido legacy."},
+        {"frente": "structured_data", "owner": "mario", "priority": 3,
+         "source": "GSC 13-may",
+         "title": "Validar corrección de datos estructurados en aromasdete.eu",
+         "detail": "Opcional — quita avisos recurrentes de GSC. Los campos del JSON-LD "
+                   "(review / aggregateRating / shippingDetails / hasMerchantReturnPolicy) "
+                   "ya están en vivo desde el fix del 14-may. GSC → aromasdete.eu → informes "
+                   "'Fragmentos de productos' y 'Fichas de comerciantes' → 'Validar "
+                   "corrección'. No afecta a España."},
     ]
 
     if not db_ok:

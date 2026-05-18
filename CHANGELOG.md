@@ -2,6 +2,17 @@
 
 Todas las versiones notables del dashboard SEO de Aromas.
 
+## [0.6.1] - 2026-05-18
+
+### Cambiado
+- **Semilla del Plan de acción reenfocada a España.** Tras decidir Mario que el mercado
+  Italia no interesa, se retiran las 3 tareas de activación de Italia (canal Google,
+  reclamar `.eu`, envío/devoluciones IT). Quedan 4 tareas centradas en lo que afecta al
+  SEO en español, con el diagnóstico ya hecho: 66 productos `landing_page_error` en el
+  feed `.com` (confirmado: `active` + `published_at=null`), validación de 404 legacy en
+  GSC (sitemap de `noticias` verificado limpio, 195/195), contenido viejo del blog sin
+  indexar, y la validación opcional de datos estructurados `.eu`.
+
 ## [0.6.0] - 2026-05-18
 
 ### Añadido
