@@ -981,6 +981,7 @@ with tabs[7]:
     st.caption("Responsable: 🤖 Claude · 🧑 Mario · 🤝 juntos — pulsa los botones para cambiar el estado.")
 
     FRENTE_LABEL = {
+        "optimizacion": "📈 Optimización",
         "indexacion": "🔎 Indexación",
         "structured_data": "🏷️ Datos estructurados",
         "shopping_eu": "🛍️ Shopping .eu",
@@ -1026,13 +1027,56 @@ with tabs[7]:
                    "ya están en vivo desde el fix del 14-may. GSC → aromasdete.eu → informes "
                    "'Fragmentos de productos' y 'Fichas de comerciantes' → 'Validar "
                    "corrección'. No afecta a España."},
+        # --- Review SEO 19-may-2026 ---
+        {"frente": "optimizacion", "owner": "claude", "priority": 1,
+         "source": "Review SEO 19-may",
+         "title": "Reescribir title y meta de páginas con muchas impresiones y CTR <0,5%",
+         "detail": "GSC 28d: páginas que rankean pero casi no reciben clic. Por impresiones: "
+                   "/products/infusion-hinojo (8.795 impr, CTR 0,2%), /collections/cafe-en-grano "
+                   "(7.934, pos 17), /products/sen (5.438, CTR 0,2%), "
+                   "/collections/infusiones-de-bienestar (4.214), /products/infusion-de-moringa "
+                   "(3.685). Reescribir títulos y meta descriptions para que inviten al clic."},
+        {"frente": "blog", "owner": "claude", "priority": 2,
+         "source": "Review SEO 19-may",
+         "title": "Optimizar posts del blog que rankean pero no reciben clic",
+         "detail": "GSC 28d: posts en buena posición con CTR casi nulo. "
+                   "blog.aromasdete.com/como-resolver-problemas-de-estrenimiento-con... "
+                   "(pos 6,4 · 4.025 impr · CTR 0,1%) y /menta-y-hierbabuena-propiedades-y-"
+                   "beneficios (pos 12,8 · 5.267 impr). Reescribir title/meta y refrescar contenido."},
+        {"frente": "optimizacion", "owner": "claude", "priority": 2,
+         "source": "Review SEO 19-may",
+         "title": "Reforzar el clúster de keyword 'hinojo'",
+         "detail": "GSC 28d: muchas consultas de hinojo en posición 7-8 ('infusion de hinojo' "
+                   "1.193 impr, 'infusión de hinojo' 959, 'te de hinojo' 866, 'hinojo infusión' "
+                   "764). Reforzar la ficha /products/infusion-hinojo y crear un artículo de "
+                   "blog con estructura Boada para empujar el clúster a top 3."},
+        {"frente": "merchant", "owner": "juntos", "priority": 1,
+         "source": "Review SEO 19-may",
+         "title": "Merchant: 5 productos aún rechazados por illegal_drugs",
+         "detail": "El feed sigue con 5 productos marcados illegal_drugs_policy_violation "
+                   "(disapproved) pese al reescrito del 14-may. Revisar esos 5 y corregir el "
+                   "texto que dispara la política de Google."},
+        {"frente": "merchant", "owner": "claude", "priority": 2,
+         "source": "Review SEO 19-may",
+         "title": "Merchant: 1.044 productos sin un atributo 'potencialmente requerido'",
+         "detail": "accountstatuses: 1.044 de 1.113 productos con missing_potentially_required_"
+                   "attribute (servability 'unaffected' — no bloquea hoy). Investigar qué "
+                   "atributo pide Google (probable GTIN o uno de categoría) y decidir si añadirlo."},
+        {"frente": "optimizacion", "owner": "juntos", "priority": 3,
+         "source": "Review SEO 19-may",
+         "title": "Vigilar la caída de tráfico orgánico de .com (revisar en junio)",
+         "detail": "GSC mar→may: .com bajó clics -18%, impresiones -25% y posición media de "
+                   "9,2 a 13. Probablemente estacional (té, se acerca el verano) más ruido de "
+                   "la posición media. Revisar en junio; si no se recupera, investigar a fondo."},
     ]
 
     if not db_ok:
         st.error("Postgres no disponible — el plan de acción dinámico necesita base de datos.")
     else:
-        if db.count_action_items() == 0:
-            for it in DEFAULT_ACTION_ITEMS:
+        # Semilla idempotente: inserta cada tarea por defecto que no exista ya (por título).
+        _existing_titles = {i["title"] for i in db.list_action_items()}
+        for it in DEFAULT_ACTION_ITEMS:
+            if it["title"] not in _existing_titles:
                 db.create_action_item(**it)
 
         items = db.list_action_items()

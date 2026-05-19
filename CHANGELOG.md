@@ -2,6 +2,20 @@
 
 Todas las versiones notables del dashboard SEO de Aromas.
 
+## [0.6.2] - 2026-05-19
+
+### Cambiado
+- **Semilla del Plan de acción ahora es idempotente por título.** Antes solo sembraba si
+  la tabla estaba vacía; ahora inserta cada tarea por defecto que no exista ya, así se
+  pueden incorporar tareas nuevas sin perder ni duplicar las existentes.
+
+### Añadido
+- **6 tareas nuevas del repaso SEO del 19-may** en el Plan de acción (nuevo frente
+  "📈 Optimización"): reescribir title/meta de páginas con muchas impresiones y CTR bajo,
+  optimizar posts del blog que rankean sin clics, reforzar el clúster de "hinojo",
+  revisar los 5 productos illegal_drugs de Merchant, investigar los 1.044 productos sin
+  atributo potencialmente requerido, y vigilar la caída de tráfico orgánico de `.com`.
+
 ## [0.6.1] - 2026-05-18
 
 ### Cambiado
