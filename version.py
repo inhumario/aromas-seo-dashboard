@@ -1,2 +1,2 @@
-__version__ = "0.6.2"
-RELEASE_DATE = "2026-05-19"
+__version__ = "0.7.0"
+RELEASE_DATE = "2026-07-07"

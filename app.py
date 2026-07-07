@@ -327,6 +327,42 @@ def ga4_report(start, end, dimensions, metrics, order_by_metric=None, limit=1000
     return pd.DataFrame(data), now_es_str()
 
 @st.cache_data(ttl=CACHE_TTL, show_spinner=False)
+def shopify_sales(start, end):
+    """Verdad de terreno: pedidos pagados reales de Shopify en el periodo.
+    GA4 subestima ~35% por consentimiento de cookies; esto es la cifra absoluta."""
+    import urllib.request
+    dom = os.environ.get("SHOPIFY_DOMAIN", "b50165-6.myshopify.com")
+    ver = os.environ.get("SHOPIFY_API_VERSION", "2025-01")
+    tok = os.environ.get("SHOPIFY_ADMIN_TOKEN", "")
+    if not tok:
+        return None
+    # end inclusivo → +1 día
+    end_excl = (datetime.strptime(end, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
+    url = (f"https://{dom}/admin/api/{ver}/orders.json?status=any&limit=250"
+           f"&fields=id,cancelled_at,test,financial_status,total_price,created_at"
+           f"&created_at_min={start}T00:00:00%2B02:00&created_at_max={end_excl}T00:00:00%2B02:00")
+    orders, count, revenue = [], 0, 0.0
+    try:
+        while url:
+            req = urllib.request.Request(url, headers={"X-Shopify-Access-Token": tok})
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                body = json.loads(resp.read())
+                link = resp.headers.get("Link", "")
+            for o in body.get("orders", []):
+                if o.get("test") or o.get("cancelled_at"):
+                    continue
+                if o.get("financial_status") in ("paid", "partially_refunded"):
+                    count += 1
+                    revenue += float(o.get("total_price") or 0)
+            url = None
+            for part in link.split(","):
+                if 'rel="next"' in part:
+                    url = part[part.find("<") + 1:part.find(">")]
+    except Exception:
+        return None
+    return {"orders": count, "revenue": revenue, "fetched": now_es_str()}
+
+@st.cache_data(ttl=CACHE_TTL, show_spinner=False)
 def merchant_full_status():
     legitimate_ids = set()
     other_sources = {}
@@ -643,10 +679,22 @@ with tabs[0]:
     col1, col2, col3, col4 = st.columns(4)
     df_hosts, fetched = ga4_report(S, E, ["hostName"],
         ["sessions", "totalUsers", "screenPageViews", "purchaseRevenue", "transactions"])
+    ga_orders = int(df_hosts['transactions'].sum()) if not df_hosts.empty else 0
+    ga_rev = float(df_hosts['purchaseRevenue'].sum()) if not df_hosts.empty else 0.0
     if not df_hosts.empty:
         col1.metric("Sesiones", f"{int(df_hosts['sessions'].sum()):,}")
-        col2.metric("Revenue", f"{df_hosts['purchaseRevenue'].sum():,.0f} €")
-        col3.metric("Pedidos", f"{int(df_hosts['transactions'].sum()):,}")
+
+    # Verdad de terreno: Shopify. GA4 subestima ~35% por consentimiento de cookies.
+    sh = shopify_sales(S, E)
+    if sh:
+        pct = f" · GA4 capta {ga_orders/sh['orders']*100:.0f}%" if sh['orders'] else ""
+        col2.metric("Pedidos (Shopify)", f"{sh['orders']:,}",
+                    help=f"Verdad de terreno. GA4 mide {ga_orders}{pct} — el resto se pierde por rechazo de cookies (GDPR).")
+        col3.metric("Ingresos (Shopify)", f"{sh['revenue']:,.0f} €",
+                    help=f"GA4 mide {ga_rev:,.0f} €. Shopify es la cifra absoluta.")
+    else:
+        col2.metric("Revenue (GA4)", f"{ga_rev:,.0f} €", help="⚠️ GA4 subestima ~35% por consentimiento. Sin token Shopify para verdad de terreno.")
+        col3.metric("Pedidos (GA4)", f"{ga_orders:,}", help="⚠️ Subestimado ~35%.")
 
     df_ads_summary, _ = ga4_report(S, E,
         ["sessionGoogleAdsCampaignName"],
@@ -656,8 +704,13 @@ with tabs[0]:
         cost = float(df_ads_summary["advertiserAdCost"].sum())
         rev_ads = float(df_ads_summary["purchaseRevenue"].sum())
         if cost > 0:
-            col4.metric("ROAS Ads", f"{rev_ads / cost:.2f}x")
-    st.caption(f"✨ GA4 a las {fetched}")
+            col4.metric("ROAS Ads", f"{rev_ads / cost:.2f}x",
+                        help="Basado en revenue GA4 (subestimado). El ROAS real es mayor.")
+    cap = f"✨ GA4 a las {fetched}"
+    if sh:
+        cap += f" · 🛒 Shopify (verdad de terreno) a las {sh['fetched']}"
+    st.caption(cap)
+    st.info("💡 **Conversiones**: Shopify es la cifra absoluta. GA4 subestima ~35% porque quien rechaza el banner de cookies no puede medirse (GDPR). Úsalo para *mezcla de canales*, no para totales.", icon="ℹ️")
     st.divider()
 
     st.subheader("Tráfico por hostname (GA4)")

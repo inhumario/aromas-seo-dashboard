@@ -2,6 +2,19 @@
 
 Todas las versiones notables del dashboard SEO de Aromas.
 
+## [0.7.0] - 2026-07-07
+
+### Añadido
+- **Verdad de terreno de ventas vía Shopify.** El Resumen ahora muestra *Pedidos (Shopify)*
+  e *Ingresos (Shopify)* como cifra absoluta, en vez del `purchaseRevenue`/`transactions`
+  de GA4. Motivo (auditoría 07-jul): GA4 solo capta ~56% de las ventas reales porque quien
+  rechaza el banner de cookies no se puede medir (GDPR) — el pixel está bien configurado,
+  es una pérdida estructural. Nuevo helper `shopify_sales()` (urllib, sin deps) que pagina
+  pedidos pagados no cancelados. GA4 queda como fuente de *mezcla de canales*, no de totales.
+- Aviso explícito en el Resumen y `help` en cada métrica indicando qué mide GA4 vs Shopify.
+- Requiere variable `SHOPIFY_ADMIN_TOKEN` (+ opcionales `SHOPIFY_DOMAIN`, `SHOPIFY_API_VERSION`)
+  en EasyPanel. Si falta, cae con elegancia a las cifras GA4 avisando de la subestimación.
+
 ## [0.6.2] - 2026-05-19
 
 ### Cambiado
