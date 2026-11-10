@@ -2,6 +2,15 @@
 
 Todas las versiones notables del dashboard SEO de Aromas.
 
+## [0.8.0] - 2026-11-10
+
+### Añadido
+- **Bloque «Asistentes de IA» en la pestaña GA4.** Sesiones, compras e ingresos que llegan
+  desde ChatGPT, Perplexity, Gemini, Claude y Copilot (`sessionSource`), con la comparación
+  frente al periodo anterior de la misma duración. Motivo: ChatGPT ya trae ventas (10 compras
+  en 90 días) y el panel no seguía ese canal. La medida semanal de si los asistentes
+  recomiendan Aromas de Té va en el report «SEO vivo» de los lunes, no aquí.
+
 ## [0.7.0] - 2026-07-07
 
 ### Añadido

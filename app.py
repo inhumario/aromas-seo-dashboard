@@ -864,6 +864,56 @@ with tabs[3]:
     if not df_sm.empty:
         st.dataframe(df_sm, use_container_width=True)
 
+    # ----- Asistentes de IA (ChatGPT, Perplexity, Gemini, Claude, Copilot) -----
+    st.divider()
+    st.subheader("Asistentes de IA")
+    st.caption("Sesiones que llegan desde ChatGPT, Perplexity, Gemini, Claude o Copilot "
+               "(sessionSource), frente al periodo anterior de la misma duración. "
+               "Compras e ingresos de GA4 son un suelo (~56 % de lo real). "
+               "La medida semanal de si los asistentes recomiendan Aromas de Té va en el "
+               "report «SEO vivo» de los lunes.")
+    _IA_FAM = ["chatgpt", "perplexity", "gemini", "claude", "copilot"]
+
+    def _ia_familia(src):
+        s = str(src).lower()
+        if "openai" in s:
+            return "chatgpt"
+        return next((f for f in _IA_FAM if f in s), None)
+
+    def _ia_tabla(start, end):
+        df, _ = ga4_report(start, end, ["sessionSource"],
+                           ["sessions", "ecommercePurchases", "purchaseRevenue"],
+                           order_by_metric="sessions", limit=1000)
+        if df.empty:
+            return pd.DataFrame(columns=["asistente", "sessions", "ecommercePurchases", "purchaseRevenue"])
+        df["asistente"] = df["sessionSource"].map(_ia_familia)
+        df = df.dropna(subset=["asistente"])
+        return df.groupby("asistente", as_index=False)[
+            ["sessions", "ecommercePurchases", "purchaseRevenue"]].sum()
+
+    _d0, _d1 = datetime.strptime(S, "%Y-%m-%d"), datetime.strptime(E, "%Y-%m-%d")
+    _n = (_d1 - _d0).days + 1
+    _pS = (_d0 - timedelta(days=_n)).strftime("%Y-%m-%d")
+    _pE = (_d0 - timedelta(days=1)).strftime("%Y-%m-%d")
+    ia_now, ia_prev = _ia_tabla(S, E), _ia_tabla(_pS, _pE)
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Sesiones desde IA", f"{int(ia_now['sessions'].sum())}",
+              delta=f"{int(ia_now['sessions'].sum() - ia_prev['sessions'].sum()):+d}")
+    c2.metric("Compras (GA4)", f"{int(ia_now['ecommercePurchases'].sum())}",
+              delta=f"{int(ia_now['ecommercePurchases'].sum() - ia_prev['ecommercePurchases'].sum()):+d}")
+    c3.metric("Ingresos (GA4)", f"{ia_now['purchaseRevenue'].sum():,.0f} €",
+              delta=f"{ia_now['purchaseRevenue'].sum() - ia_prev['purchaseRevenue'].sum():+,.0f} €")
+    ia_cmp = ia_now.merge(ia_prev, on="asistente", how="outer", suffixes=("", "_anterior")).fillna(0)
+    if ia_cmp.empty:
+        st.info("Sin sesiones desde asistentes de IA en este periodo.")
+    else:
+        st.caption(f"Periodo anterior: {_pS} → {_pE}")
+        st.dataframe(ia_cmp.rename(columns={
+            "sessions": "sesiones", "ecommercePurchases": "compras", "purchaseRevenue": "ingresos €",
+            "sessions_anterior": "sesiones antes", "ecommercePurchases_anterior": "compras antes",
+            "purchaseRevenue_anterior": "ingresos € antes",
+        }).sort_values("sesiones", ascending=False), use_container_width=True, hide_index=True)
+
 # ========== ADS ==========
 with tabs[4]:
     col_title, col_refresh = st.columns([5, 1])
