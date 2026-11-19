@@ -136,6 +136,23 @@ def authenticate(login: str, password: str):
     return _public(user)
 
 
+def login_by_email_sso(email: str):
+    """Entrada única desde el portal Ecommerce Inhumario: usuario ACTIVO con ese email
+    (no por username). Abre sesión igual que authenticate(); None si no hay."""
+    email = (email or "").strip().lower()
+    if not email:
+        return None
+    with db.get_conn() as c:
+        user = c.execute(
+            "SELECT * FROM users WHERE lower(email)=%s AND is_active=TRUE LIMIT 1", (email,)
+        ).fetchone()
+        if not user:
+            return None
+        c.execute("UPDATE users SET last_login_at=NOW() WHERE id=%s", (user["id"],))
+    user["last_login_at"] = datetime.now(timezone.utc)
+    return _public(user)
+
+
 # ---------- Alta / gestión de usuarios ----------
 
 def create_user(username, email, full_name, password, role="viewer", must_change=True):

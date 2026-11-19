@@ -13,6 +13,7 @@ from version import __version__, RELEASE_DATE
 import db
 import alerts as alerts_mod
 import auth
+import sso_portal
 
 # ---------- Config Streamlit ----------
 st.set_page_config(
@@ -216,6 +217,30 @@ def render_legacy_login():
 
 
 def run_auth_gate():
+    # 0) Entrada única desde el portal Ecommerce Inhumario: ?sso=<billete> (ver sso_portal.py)
+    billete = st.query_params.get("sso")
+    if billete:
+        try:
+            del st.query_params["sso"]
+        except Exception:
+            pass
+        datos, motivo = sso_portal.comprobar(billete)
+        user = None
+        if datos and db_ok:
+            try:
+                user = auth.login_by_email_sso(datos.get("email", ""))
+            except Exception:
+                user = None
+            if not user:
+                motivo = (f"No hay ningún usuario activo del panel con el email {datos.get('email')}. "
+                          "Entra con tu usuario y contraseña.")
+        elif datos:
+            motivo = "La base de datos de usuarios no está disponible ahora mismo."
+        if user:
+            st.session_state.auth_user = user
+            st.rerun()
+        st.session_state["flash"] = ("warning", motivo)
+
     # 1) Enlace de recuperación de contraseña
     token = st.query_params.get("reset_token")
     if token:

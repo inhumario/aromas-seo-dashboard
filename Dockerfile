@@ -20,6 +20,7 @@ RUN pip install -r requirements.txt
 COPY app.py /app/app.py
 COPY db.py /app/db.py
 COPY auth.py /app/auth.py
+COPY sso_portal.py /app/sso_portal.py
 COPY alerts.py /app/alerts.py
 COPY snapshot.py /app/snapshot.py
 COPY version.py /app/version.py

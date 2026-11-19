@@ -2,6 +2,17 @@
 
 Todas las versiones notables del dashboard SEO de Aromas.
 
+## [0.9.0] - 2026-11-19
+
+### Añadido
+- **Entrada única desde el portal Ecommerce Inhumario** (`ecommerce.inhumario.com`):
+  `?sso=<billete>` firmado con `SSO_KEY_ECOMMERCE` (HMAC-SHA256, 60 s, un solo uso). Abre la
+  sesión del usuario activo con ese **email**; si no hay, aviso y login normal. El login
+  de siempre no cambia.
+- Cabecera `Content-Security-Policy: frame-ancestors 'self' https://ecommerce.inhumario.com`
+  en Caddy para que el portal pueda mostrar el panel dentro. Dominio alias
+  `seo-aromas.inhumario.com` (mismo sitio que el portal, para que las cookies valgan dentro).
+
 ## [0.8.0] - 2026-11-10
 
 ### Añadido
