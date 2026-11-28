@@ -194,7 +194,10 @@ def evaluate_all_and_notify() -> list[dict]:
         ev = evaluate_rule(rule)
         rule_result = {"rule_id": rule["id"], "rule_name": rule["name"], **ev}
         if ev["triggered"]:
-            emails = rule["notify_emails"] or []
+            # Canal único de avisos (regla de Mario 20-11-2026): este contenedor no escribe a Mario por correo.
+            # La alerta queda registrada (record_alert_event) y se ve en la tab «🔔 Alertas» del dashboard.
+            # Para volver a mandar correo habría que poner ALERTAS_EMAIL=1 en el entorno de EasyPanel.
+            emails = (rule["notify_emails"] or []) if os.environ.get("ALERTAS_EMAIL") == "1" else []
             sent_ok = []
             for em in emails:
                 ok, msg = send_alert_email([em], rule["name"], ev["explanation"])
